@@ -1,83 +1,111 @@
-# 具身智能挑战杯项目记录
+# 具身智能挑战杯协作仓库
 
-这个仓库用于存放我们参加具身智能挑战杯初赛时的辅助代码、视觉调试脚本、场景记录和后续说明。当前阶段先服务于 Scene3「SMT 料盘出库」任务，重点是把相机图像读取、料盘识别、坐标/抓取点输出这条链路先跑通。
+本仓库用于管理 2026 挑战杯具身智能操作赛 / Kuavo 仿真初赛的团队代码、视觉工具、任务记录和提交材料。
+
+当前策略：先做可得分闭环，再做稳定性优化。所有代码和文档都围绕三个仿真场景服务：
+
+| 场景 | 任务 | 负责人 | 第一阶段目标 |
+| --- | --- | --- | --- |
+| Scene1 | 包裹称重与入箱 | 王仔俊（$$） | 先完成 1 个包裹抓取、称重、入箱，再扩展到 4 个 |
+| Scene2 | 零件识别、分类、放入对应盒子 | 史智涛（真空期）+ Kevin | 先识别并放对 1 个零件，再扩展到 6 个 |
+| Scene3 | SMT 料盘出库 | 闫帅辰 + 王森（易水寒） | 先完成上层料盘，再尝试下层料盘 |
+| 视觉与坐标 | 相机读取、目标检测、深度、3D 坐标、抓取点偏移 | 闫帅辰，王仔俊辅助 | 先打通 RGB + depth -> camera_xyz -> JSON |
+| 测试与提交 | 测试表、README、截图视频、最终打包 | 窦欣悦（精准控温洗澡水） | 每天记录可运行结果，最后整理提交包 |
+
+## 仓库结构
+
+```text
+.
+├── README.md
+├── docs/
+│   ├── day2_plan.md              # 明天环境配置好后的具体任务板
+│   ├── git_workflow.md           # 团队 GitHub 协作规则
+│   ├── submit_checklist.md       # 最终提交检查清单
+│   ├── team_roles.md             # 成员分工和交付物
+│   └── test_record.md            # 每天测试记录模板
+├── src/
+│   ├── scene1/README.md          # Scene1 工作区说明
+│   ├── scene2/README.md          # Scene2 工作区说明
+│   ├── scene3/README.md          # Scene3 工作区说明
+│   └── vision/README.md          # 视觉模块接口说明
+├── submission/
+│   └── README.md                 # 最终提交包整理说明
+└── tools/
+    └── vision/
+        ├── README.md
+        ├── save_compressed_image.py
+        ├── save_depth_image.py
+        ├── detect_tray_opencv.py
+        └── detect_tray_3d.py
+```
 
 ## 当前进展
 
 更新时间：2026-07-12
 
-目前已经完成的前期验证：
+已经完成：
 
-1. 服务器仿真环境已能启动 Scene3。
-2. 已确认机器人有头部、左手、右手三组相机话题，并且有 RGB 图和深度图。
-3. 头部相机 RGB 图可以正常保存，已经能看到货架和 SMT 料盘。
-4. 远程服务器可以访问 GitHub raw 链接，因此后续脚本可以通过 GitHub 下载到服务器。
-5. 本次上传了两个 Scene3 视觉调试脚本，先用于“看图、存图、检测大概位置”，不是最终完整方案。
+1. 远程服务器仿真环境可以启动 Scene3。
+2. 已确认头部、左手、右手相机话题，均有 RGB 和 depth。
+3. 头部 RGB 图可以保存，能看到货架和 SMT 料盘。
+4. `detect_tray_opencv.py` 已经能粗框货架 / 料盘候选区域。
+5. GitHub 到服务器的代码同步流程已跑通。
 
-## 本次上传文件说明
+下一步只盯一个小闭环：
 
-| 文件 | 作用 | 当前用途 |
-| --- | --- | --- |
-| `save_compressed_image.py` | 从 ROS 的压缩相机话题中保存图片 | 用来保存头部/手部相机画面，方便后续调试、标注、比较不同 seed 下的场景 |
-| `detect_tray_opencv.py` | 用 OpenCV 对保存下来的图片做初步检测 | 先尝试从头部相机图像里找到货架/料盘的大致区域，输出候选框、中心点和可视化结果 |
+```text
+Scene3 RGB 图检测料盘 bbox
+-> 保存 depth
+-> 取 bbox center 附近深度中位数
+-> 用 camera_info 转 camera_xyz
+-> 输出 JSON 给动作组
+```
 
-简单理解：
+## 明天优先级
 
-- `save_compressed_image.py` 负责“把机器人看到的画面存下来”。
-- `detect_tray_opencv.py` 负责“在存下来的图里先粗略找料盘在哪里”。
+先看 [docs/day2_plan.md](docs/day2_plan.md)。
 
-这两个脚本主要是视觉调试工具，目的是让我们先验证：相机能不能用、图像是否清楚、料盘在图里大概长什么样、能不能稳定找出候选区域。
+每个人都要产出可运行结果，不要只研究方案：
 
-## 服务器下载方式
+- Scene1：能检测 / 接近 1 个包裹。
+- Scene2：能识别 1 个零件并输出 3D 点。
+- Scene3：能输出上层料盘 3D 点，动作骨架能动手臂和夹爪。
+- 测试：有测试表、有截图、有失败原因。
 
-在远程 Ubuntu 的项目目录下执行：
+## 服务器下载工具
+
+在远程 Ubuntu 的比赛仓库根目录执行：
 
 ```bash
 cd ~/code/leju-kuavo-challenge-cup-2026-master
-mkdir -p vision_debug/scene3_tools
-cd vision_debug/scene3_tools
+mkdir -p tools/vision
+cd tools/vision
 
-curl -L -o detect_tray_opencv.py https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/main/detect_tray_opencv.py
-curl -L -o save_compressed_image.py https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/main/save_compressed_image.py
+curl -L -O https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/repo-structure-day2/tools/vision/save_compressed_image.py
+curl -L -O https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/repo-structure-day2/tools/vision/save_depth_image.py
+curl -L -O https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/repo-structure-day2/tools/vision/detect_tray_opencv.py
+curl -L -O https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/repo-structure-day2/tools/vision/detect_tray_3d.py
 
 chmod +x *.py
-ls -lh
 ```
 
-## 后续建议流程
+## 比赛规则提醒
 
-Scene3 视觉部分建议按这个顺序推进：
+正常方案只能使用机器人自身传感器和允许的控制接口。不要使用：
 
-1. 保存不同 seed 下的头部相机图像。
-2. 用 `detect_tray_opencv.py` 跑保存图，观察能不能稳定框出料盘/货架区域。
-3. 如果 OpenCV 阈值法不稳定，再考虑换 YOLO 或 SAM 辅助分割。
-4. 视觉模块最终要给动作模块输出：物体类别、图像中心点、候选框、深度/距离、建议抓取点。
-5. 动作模块再根据这些信息完成靠近、抓取、抬起、转移、放置。
+- `/mujoco/qpos`
+- `/ground_truth/state`
+- `/set_object_position`
+- 评分逻辑或场景模型修改
+- 固定 seed 写死位置
 
-## 重要规则提醒
+本仓库视觉工具只读相机图像和相机参数，属于正常视觉方案。
 
-比赛中不能为了图方便读取仿真真值坐标，尤其不要使用这些内容：
+## 协作原则
 
-- 不要订阅 `/mujoco/qpos`
-- 不要订阅 `/ground_truth/state`
-- 不要调用 `/set_object_position` 或类似摆物体服务
-- 不要修改评分逻辑
-- 不要修改仿真场景来降低难度
-- 不要针对固定 seed 写死位置
-
-我们目前这些脚本只使用相机图像，属于正常视觉方案。
-
-## 后续提交说明建议
-
-大家后面往仓库里加代码时，建议在 README 或单独日志里写清楚：
-
-```text
-日期：
-负责人：
-修改文件：
-这次解决了什么问题：
-怎么运行/怎么测试：
-当前还没解决的问题：
-```
-
-这样后面别人接手时不会断档，也方便最后整理 README、测试记录和提交材料。
+- GitHub 管代码和文档。
+- 网盘管 rosbag、大视频、大模型权重。
+- `main` 保持稳定。
+- 每个人用自己的分支开发。
+- 每天晚上把能跑的东西合并。
+- 最终提交包以官方 `challenge_cup_task_template` 为准，本仓库用于协作和整理。
