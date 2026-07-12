@@ -102,10 +102,10 @@ python3 tools/工具/视觉/scene3_server/scene3_upper_tray_perception.py \
 
 正式节点会：
 
-- 在上层货架区域自动匹配料盘
+- 以低阈值召回上层候选，再用高分料盘建立 RGB-D 货架平面并过滤假框
 - 使用候选框内第 10 百分位深度，避免读到料盘后方背景
 - 输出相机坐标和 `base_link_xyz_m`
-- 保存 `upper_trays.jpg`、`upper_trays.json`
+- 保存 `upper_trays.jpg`、`upper_candidates.jpg`、`upper_trays.json`
 - 发布只读结果话题 `/scene3/upper_trays`
 
 ## 采集跨 seed RGB-D 数据
