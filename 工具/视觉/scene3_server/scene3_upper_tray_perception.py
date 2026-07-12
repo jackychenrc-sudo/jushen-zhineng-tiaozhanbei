@@ -98,10 +98,15 @@ def parse_args():
     parser.add_argument("--template", required=True)
     parser.add_argument("--output-dir", default="/tmp/scene3_upper_trays")
     parser.add_argument("--search-roi", default="0.30,0.25,0.70,0.43")
-    parser.add_argument("--match-threshold", type=float, default=0.40)
+    parser.add_argument("--match-threshold", type=float, default=0.25)
+    parser.add_argument("--minimum-score", type=float, default=0.32)
+    parser.add_argument("--anchor-score", type=float, default=0.60)
+    parser.add_argument("--plane-x-tolerance", type=float, default=0.06)
+    parser.add_argument("--plane-z-tolerance", type=float, default=0.04)
+    parser.add_argument("--expected-count", type=int, default=3)
     parser.add_argument("--depth-percentile", type=float, default=10.0)
     parser.add_argument("--nms-pixels", type=int, default=20)
-    parser.add_argument("--max-matches", type=int, default=8)
+    parser.add_argument("--max-matches", type=int, default=20)
     parser.add_argument("--target-frame", default="base_link")
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--rgb-topic", default="/cam_h/color/image_raw/compressed")
@@ -158,18 +163,17 @@ def main():
         dtype=np.float64,
     )
 
-    score_order = {tuple(item["bbox"]): rank for rank, item in enumerate(matches)}
-    trays = []
-    for order_x, match in enumerate(sorted(matches, key=lambda item: item["center_pixel"][0])):
+    candidates = []
+    for rank_by_score, match in enumerate(matches):
         depth_m, valid_pixels = percentile_depth(
             depth_image, match["bbox"], args.depth_percentile
         )
         camera_xyz = np.array(project_pixel(match["center_pixel"], depth_m, camera_info))
         target_xyz = rotation.dot(camera_xyz) + translation
-        trays.append(
+        candidates.append(
             {
-                "id": "upper_x{}".format(order_x),
-                "rank_by_score": score_order[tuple(match["bbox"])],
+                "candidate_id": "candidate_{}".format(rank_by_score),
+                "rank_by_score": rank_by_score,
                 "score": match["score"],
                 "bbox": match["bbox"],
                 "center_pixel": match["center_pixel"],
@@ -179,6 +183,69 @@ def main():
                 "camera_xyz_m": camera_xyz.tolist(),
                 "base_link_xyz_m": target_xyz.tolist(),
             }
+        )
+
+    anchors = [item for item in candidates if item["score"] >= args.anchor_score]
+    if len(anchors) < 2:
+        anchors = sorted(candidates, key=lambda item: item["score"], reverse=True)[:2]
+    plane_x = float(np.median([item["base_link_xyz_m"][0] for item in anchors]))
+    plane_z = float(np.median([item["base_link_xyz_m"][2] for item in anchors]))
+
+    accepted = []
+    for candidate in candidates:
+        candidate["plane_dx_m"] = abs(candidate["base_link_xyz_m"][0] - plane_x)
+        candidate["plane_dz_m"] = abs(candidate["base_link_xyz_m"][2] - plane_z)
+        candidate["selection_score"] = candidate["score"] - 0.10 * (
+            candidate["plane_dx_m"] / args.plane_x_tolerance
+            + candidate["plane_dz_m"] / args.plane_z_tolerance
+        )
+        candidate["accepted"] = bool(
+            candidate["score"] >= args.minimum_score
+            and candidate["plane_dx_m"] <= args.plane_x_tolerance
+            and candidate["plane_dz_m"] <= args.plane_z_tolerance
+        )
+        if candidate["accepted"]:
+            accepted.append(candidate)
+
+    if len(accepted) > args.expected_count:
+        keep = {
+            item["candidate_id"]
+            for item in sorted(
+                accepted, key=lambda item: item["selection_score"], reverse=True
+            )[: args.expected_count]
+        }
+        for candidate in candidates:
+            candidate["accepted"] = candidate["candidate_id"] in keep
+        accepted = [item for item in candidates if item["accepted"]]
+
+    trays = []
+    for order_x, candidate in enumerate(
+        sorted(accepted, key=lambda item: item["center_pixel"][0])
+    ):
+        tray = dict(candidate)
+        tray["id"] = "upper_x{}".format(order_x)
+        trays.append(tray)
+
+    candidate_visualization = image.copy()
+    for candidate in candidates:
+        x1, y1, x2, y2 = candidate["bbox"]
+        color = (0, 255, 0) if candidate["accepted"] else (0, 255, 255)
+        thickness = 3 if candidate["accepted"] else 1
+        cv2.rectangle(candidate_visualization, (x1, y1), (x2, y2), color, thickness)
+        cv2.putText(
+            candidate_visualization,
+            "{} s={:.2f} dx={:.2f} dz={:.2f}".format(
+                candidate["candidate_id"],
+                candidate["score"],
+                candidate["plane_dx_m"],
+                candidate["plane_dz_m"],
+            ),
+            (x1, max(18, y1 - 5)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.38,
+            color,
+            1,
+            cv2.LINE_AA,
         )
 
     visualization = image.copy()
@@ -196,18 +263,30 @@ def main():
             cv2.LINE_AA,
         )
 
+    status = "ok" if len(trays) == args.expected_count else "count_mismatch"
     payload = {
-        "status": "ok",
+        "status": status,
         "source_frame": camera_info.header.frame_id,
         "target_frame": args.target_frame,
         "search_roi": parse_roi(args.search_roi),
         "match_threshold": args.match_threshold,
+        "minimum_score": args.minimum_score,
+        "anchor_score": args.anchor_score,
+        "expected_count": args.expected_count,
+        "plane_filter": {
+            "reference_base_x_m": plane_x,
+            "reference_base_z_m": plane_z,
+            "x_tolerance_m": args.plane_x_tolerance,
+            "z_tolerance_m": args.plane_z_tolerance,
+        },
         "depth_method": "bbox_percentile",
         "upper_trays": trays,
+        "candidates": candidates,
     }
     json_text = json.dumps(payload, ensure_ascii=False, indent=2)
     (output_dir / "upper_trays.json").write_text(json_text, encoding="utf-8")
     cv2.imwrite(str(output_dir / "upper_trays.jpg"), visualization)
+    cv2.imwrite(str(output_dir / "upper_candidates.jpg"), candidate_visualization)
 
     publisher = rospy.Publisher(args.publish_topic, String, queue_size=1, latch=True)
     rospy.sleep(0.3)
@@ -215,6 +294,7 @@ def main():
     rospy.sleep(0.3)
     print(json_text)
     print("saved_image={}".format(output_dir / "upper_trays.jpg"))
+    print("saved_candidates={}".format(output_dir / "upper_candidates.jpg"))
     print("saved_json={}".format(output_dir / "upper_trays.json"))
 
 
