@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""根据可信视觉结果规划或执行一次 Scene3 向前短脉冲。"""
-
 import argparse
 import json
 import statistics
@@ -25,7 +23,6 @@ def parse_args():
 
 
 def load_detection(path):
-    """读取检测结果；数量或状态异常时禁止生成运动计划。"""
     detection_path = Path(path)
     if not detection_path.is_file():
         raise ValueError("detection JSON does not exist: {}".format(path))
@@ -41,7 +38,6 @@ def load_detection(path):
 
 
 def raw_xyz(tray):
-    """靠近阶段只使用未经经验公式修正的 base_link 坐标。"""
     values = tray.get("base_link_xyz_raw_m", tray.get("base_link_xyz_m"))
     if not isinstance(values, list) or len(values) != 3:
         raise ValueError("tray does not contain a valid base_link XYZ")
@@ -49,8 +45,6 @@ def raw_xyz(tray):
 
 
 def build_plan(args, data, trays):
-    # 四道运动门：总分、深度形状、RGB-D 几何来源、完整物体框。
-    # 任一条件不满足都直接报错，不允许仅凭“检测到三个框”继续前进。
     for tray in trays:
         score = float(tray.get("selection_score", 0.0))
         if score < args.minimum_selection_score:
@@ -82,7 +76,6 @@ def build_plan(args, data, trays):
             )
 
     tray_positions = [raw_xyz(tray) for tray in trays]
-    # 用三个料盘前向距离的中位数估计货架距离，降低单个深度异常的影响。
     shelf_distance = float(statistics.median(position[0] for position in tray_positions))
     if not 0.40 <= shelf_distance <= 2.50:
         raise ValueError(
@@ -91,7 +84,6 @@ def build_plan(args, data, trays):
             )
         )
 
-    # 这里只记录最适合右手的候选，短脉冲本身不做横移、伸臂或夹爪动作。
     target_index = min(
         range(len(trays)),
         key=lambda index: (
@@ -135,7 +127,6 @@ def build_plan(args, data, trays):
 
 
 def execute_forward_pulse(args, plan):
-    """只发布一次受距离、速度和时长限制的前进指令。"""
     if args.confirmation != "FORWARD_ONLY":
         raise ValueError(
             "execution requires --confirmation FORWARD_ONLY"
@@ -172,7 +163,6 @@ def execute_forward_pulse(args, plan):
             publisher.publish(forward)
             rate.sleep()
     finally:
-        # 无论正常结束还是中途异常，都连续发布零速度，确保机器人停住。
         for _ in range(12):
             publisher.publish(stop)
             rate.sleep()
@@ -201,4 +191,3 @@ if __name__ == "__main__":
     except (RuntimeError, ValueError) as error:
         print("ERROR: {}".format(error), file=sys.stderr)
         raise SystemExit(1)
-
