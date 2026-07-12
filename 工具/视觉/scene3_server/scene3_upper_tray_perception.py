@@ -292,6 +292,74 @@ def fit_row_model(anchors, fallback_y):
     return float(np.clip(slope, -0.12, 0.12)), float(intercept)
 
 
+def load_shelf_calibration(path):
+    if not path:
+        return []
+    calibration_path = Path(path)
+    if not calibration_path.is_file():
+        raise ValueError("calibration file does not exist: {}".format(path))
+    data = json.loads(calibration_path.read_text(encoding="utf-8"))
+    knots = data.get("shelf_knots", [])
+    if not isinstance(knots, list) or not knots:
+        raise ValueError("calibration file must contain non-empty shelf_knots")
+    parsed = []
+    for knot in knots:
+        coordinate = float(knot["coordinate"])
+        offset = [float(value) for value in knot["offset_xyz_m"]]
+        if len(offset) != 3:
+            raise ValueError("each calibration offset_xyz_m must contain 3 values")
+        parsed.append(
+            {"coordinate": coordinate, "offset_xyz_m": offset}
+        )
+    return sorted(parsed, key=lambda item: item["coordinate"])
+
+
+def interpolate_shelf_offset(knots, coordinate):
+    if not knots:
+        return np.zeros(3, dtype=np.float64)
+    coordinates = np.array(
+        [item["coordinate"] for item in knots], dtype=np.float64
+    )
+    result = []
+    for axis in range(3):
+        values = np.array(
+            [item["offset_xyz_m"][axis] for item in knots], dtype=np.float64
+        )
+        result.append(float(np.interp(coordinate, coordinates, values)))
+    return np.array(result, dtype=np.float64)
+
+
+def shelf_plane_correction(
+    candidate,
+    plane_x,
+    plane_z,
+    shelf_coordinate,
+    base_weight,
+    edge_weight,
+    uncertainty_weight,
+    maximum_weight,
+):
+    template_uncertainty = float(
+        np.clip(1.0 - candidate["template_score"], 0.0, 1.0)
+    )
+    edge_factor = float(np.clip(abs(shelf_coordinate) * 2.0, 0.0, 1.0))
+    correction_weight = float(
+        np.clip(
+            base_weight
+            + edge_weight * edge_factor
+            + uncertainty_weight * template_uncertainty,
+            0.0,
+            maximum_weight,
+        )
+    )
+    raw_xyz = np.array(candidate["base_link_xyz_m"], dtype=np.float64)
+    plane_delta = np.array(
+        [plane_x - raw_xyz[0], 0.0, plane_z - raw_xyz[2]],
+        dtype=np.float64,
+    )
+    return correction_weight, correction_weight * plane_delta
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--template", required=True)
@@ -311,6 +379,14 @@ def parse_args():
     parser.add_argument("--width-scales", default="0.65,0.80,1.0,1.25,1.55,1.9,2.3")
     parser.add_argument("--height-scales", default="0.80,0.95,1.10")
     parser.add_argument("--edge-weight", type=float, default=0.35)
+    parser.add_argument("--calibration-file", default="")
+    parser.add_argument("--plane-correction-base", type=float, default=0.05)
+    parser.add_argument("--plane-correction-edge-weight", type=float, default=0.25)
+    parser.add_argument(
+        "--plane-correction-uncertainty-weight", type=float, default=0.60
+    )
+    parser.add_argument("--plane-correction-max", type=float, default=0.80)
+    parser.add_argument("--use-corrected-output", action="store_true")
     parser.add_argument("--nms-pixels", type=int, default=22)
     parser.add_argument("--max-matches", type=int, default=60)
     parser.add_argument("--target-frame", default="base_link")
@@ -332,6 +408,7 @@ def main():
     roi = parse_roi(args.search_roi)
     width_scales = parse_csv_floats(args.width_scales)
     height_scales = parse_csv_floats(args.height_scales)
+    calibration_knots = load_shelf_calibration(args.calibration_file)
 
     rospy.init_node("scene3_upper_tray_perception", anonymous=True)
     camera_info = rospy.wait_for_message(args.camera_info_topic, CameraInfo, timeout=args.timeout)
@@ -482,6 +559,38 @@ def main():
                 "selection_score": selection_score,
             }
         )
+        shelf_center = 0.5 * float(roi_x1 + roi_x2)
+        shelf_coordinate = (float(u) - shelf_center) / shelf_width
+        correction_weight, plane_correction = shelf_plane_correction(
+            candidate,
+            plane_x,
+            plane_z,
+            shelf_coordinate,
+            args.plane_correction_base,
+            args.plane_correction_edge_weight,
+            args.plane_correction_uncertainty_weight,
+            args.plane_correction_max,
+        )
+        calibration_offset = interpolate_shelf_offset(
+            calibration_knots, shelf_coordinate
+        )
+        raw_xyz = np.array(candidate["base_link_xyz_m"], dtype=np.float64)
+        corrected_xyz = raw_xyz + plane_correction + calibration_offset
+        candidate.update(
+            {
+                "shelf_coordinate": shelf_coordinate,
+                "plane_correction_weight": correction_weight,
+                "plane_correction_xyz_m": plane_correction.tolist(),
+                "calibration_offset_xyz_m": calibration_offset.tolist(),
+                "base_link_xyz_raw_m": raw_xyz.tolist(),
+                "base_link_xyz_corrected_m": corrected_xyz.tolist(),
+            }
+        )
+        candidate["base_link_xyz_m"] = (
+            corrected_xyz.tolist()
+            if args.use_corrected_output
+            else raw_xyz.tolist()
+        )
         source_ok = (
             candidate["template_score"] >= args.minimum_score
             or candidate["depth_shape_score"] >= 0.42
@@ -550,7 +659,7 @@ def main():
     status = "ok" if len(trays) == args.expected_count else "count_mismatch"
     payload = {
         "status": status,
-        "algorithm": "multiscale_rgbd_perspective_v3",
+        "algorithm": "multiscale_rgbd_shelf_calibration_v4",
         "source_frame": camera_info.header.frame_id,
         "target_frame": args.target_frame,
         "search_roi": roi,
@@ -576,6 +685,20 @@ def main():
             "row_slope": row_slope,
             "row_intercept": row_intercept,
             "row_tolerance_pixels": args.row_tolerance_pixels,
+        },
+        "shelf_coordinate_calibration": {
+            "coordinate_definition": "(u - roi_center_u) / roi_width",
+            "base_link_xyz_output": (
+                "corrected" if args.use_corrected_output else "raw"
+            ),
+            "plane_correction": {
+                "base_weight": args.plane_correction_base,
+                "edge_weight": args.plane_correction_edge_weight,
+                "uncertainty_weight": args.plane_correction_uncertainty_weight,
+                "maximum_weight": args.plane_correction_max,
+            },
+            "calibration_file": args.calibration_file or None,
+            "shelf_knots": calibration_knots,
         },
         "depth_method": "component_median_or_bbox_percentile",
         "upper_trays": trays,
