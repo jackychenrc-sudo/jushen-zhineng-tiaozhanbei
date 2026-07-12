@@ -55,6 +55,11 @@ def bbox_iou(first, second):
     return float(intersection) / float(first_area + second_area - intersection)
 
 
+def bbox_center(bbox):
+    x1, y1, x2, y2 = bbox
+    return [(x1 + x2) // 2, (y1 + y2) // 2]
+
+
 def suppress_matches(matches, nms_pixels, max_matches):
     selected = []
     for match in sorted(matches, key=lambda item: item["score"], reverse=True):
@@ -67,20 +72,35 @@ def suppress_matches(matches, nms_pixels, max_matches):
                 match["bbox"], existing["bbox"]
             ) > 0.30:
                 duplicate = True
+                best_score = max(
+                    existing.get("score", 0.0), match.get("score", 0.0)
+                )
                 combined_sources = sorted(
                     set(existing.get("proposal_sources", []))
                     | set(match.get("proposal_sources", []))
                 )
-                combined_depth_score = max(
-                    existing.get("depth_shape_score", 0.0),
-                    match.get("depth_shape_score", 0.0),
-                )
+                existing_depth_score = existing.get("depth_shape_score", 0.0)
+                incoming_depth_score = match.get("depth_shape_score", 0.0)
+                best_depth = match if incoming_depth_score > existing_depth_score else existing
+                best_depth_fields = {}
+                for key in (
+                    "depth_bbox",
+                    "depth_center_pixel",
+                    "depth_override_m",
+                ):
+                    if key in best_depth:
+                        value = best_depth[key]
+                        best_depth_fields[key] = list(value) if isinstance(value, list) else value
                 if match.get("template_score", 0.0) > existing.get(
                     "template_score", 0.0
                 ):
                     existing.update(match)
+                existing["score"] = best_score
                 existing["proposal_sources"] = combined_sources
-                existing["depth_shape_score"] = combined_depth_score
+                existing["depth_shape_score"] = max(
+                    existing_depth_score, incoming_depth_score
+                )
+                existing.update(best_depth_fields)
                 break
         if not duplicate:
             selected.append(dict(match))
@@ -149,6 +169,13 @@ def multiscale_template_matches(
                 edge_score = float(edge_response[local_y, local_x])
                 left = int(x1 + local_x)
                 top = int(y1 + local_y)
+                bbox = [
+                    left,
+                    top,
+                    left + template_width,
+                    top + template_height,
+                ]
+                center = bbox_center(bbox)
                 raw.append(
                     {
                         "score": score,
@@ -156,16 +183,10 @@ def multiscale_template_matches(
                         "gray_score": gray_score,
                         "edge_score": edge_score,
                         "depth_shape_score": 0.0,
-                        "bbox": [
-                            left,
-                            top,
-                            left + template_width,
-                            top + template_height,
-                        ],
-                        "center_pixel": [
-                            left + template_width // 2,
-                            top + template_height // 2,
-                        ],
+                        "bbox": bbox,
+                        "center_pixel": center,
+                        "template_bbox": bbox,
+                        "template_center_pixel": center,
                         "template_scale": [width_scale, height_scale],
                         "proposal_sources": ["multiscale_template"],
                     }
@@ -251,6 +272,8 @@ def depth_vertical_proposals(
         if component_values.size == 0:
             continue
         depth_hint = float(np.median(component_values))
+        bbox = [left, top, right, bottom]
+        center = bbox_center(bbox)
         proposals.append(
             {
                 "score": 0.55 * shape_score,
@@ -259,8 +282,10 @@ def depth_vertical_proposals(
                 "edge_score": 0.0,
                 "depth_shape_score": shape_score,
                 "depth_override_m": depth_hint,
-                "bbox": [left, top, right, bottom],
-                "center_pixel": [(left + right) // 2, (top + bottom) // 2],
+                "bbox": bbox,
+                "center_pixel": center,
+                "depth_bbox": bbox,
+                "depth_center_pixel": center,
                 "template_scale": None,
                 "proposal_sources": ["rgbd_vertical"],
             }
@@ -376,6 +401,7 @@ def parse_args():
     parser.add_argument("--expected-count", type=int, default=3)
     parser.add_argument("--depth-percentile", type=float, default=10.0)
     parser.add_argument("--depth-band-tolerance", type=float, default=0.08)
+    parser.add_argument("--geometry-depth-score", type=float, default=0.55)
     parser.add_argument("--width-scales", default="0.65,0.80,1.0,1.25,1.55,1.9,2.3")
     parser.add_argument("--height-scales", default="0.80,0.95,1.10")
     parser.add_argument("--edge-weight", type=float, default=0.35)
@@ -481,14 +507,30 @@ def main():
     for rank_by_score, match in enumerate(
         sorted(matches, key=lambda item: item["score"], reverse=True)
     ):
-        if match.get("depth_override_m") is not None:
+        detection_bbox = list(match.get("template_bbox", match["bbox"]))
+        detection_center = list(
+            match.get("template_center_pixel", match["center_pixel"])
+        )
+        use_depth_geometry = bool(
+            match.get("depth_shape_score", 0.0) >= args.geometry_depth_score
+            and match.get("depth_bbox") is not None
+        )
+        object_bbox = list(
+            match["depth_bbox"] if use_depth_geometry else detection_bbox
+        )
+        object_center = list(
+            match.get("depth_center_pixel", bbox_center(object_bbox))
+            if use_depth_geometry
+            else detection_center
+        )
+        if use_depth_geometry and match.get("depth_override_m") is not None:
             depth_m = float(match["depth_override_m"])
-            valid_pixels = int(valid_depth_values(depth_image, match["bbox"]).size)
+            valid_pixels = int(valid_depth_values(depth_image, object_bbox).size)
         else:
             depth_m, valid_pixels = percentile_depth(
-                depth_image, match["bbox"], args.depth_percentile
+                depth_image, detection_bbox, args.depth_percentile
             )
-        camera_xyz = np.array(project_pixel(match["center_pixel"], depth_m, camera_info))
+        camera_xyz = np.array(project_pixel(object_center, depth_m, camera_info))
         target_xyz = rotation.dot(camera_xyz) + translation
         candidate = dict(match)
         candidate.update(
@@ -500,6 +542,15 @@ def main():
                 "valid_depth_pixels": valid_pixels,
                 "camera_xyz_m": camera_xyz.tolist(),
                 "base_link_xyz_m": target_xyz.tolist(),
+                "detection_bbox": detection_bbox,
+                "detection_center_pixel": detection_center,
+                "object_bbox": object_bbox,
+                "object_center_pixel": object_center,
+                "geometry_source": (
+                    "rgbd_vertical" if use_depth_geometry else "template"
+                ),
+                "bbox": object_bbox,
+                "center_pixel": object_center,
             }
         )
         candidate.pop("depth_override_m", None)
@@ -539,10 +590,10 @@ def main():
             -0.5 * (row_error / max(args.row_tolerance_pixels, 1e-6)) ** 2
         )
         appearance_score = max(
-            candidate["template_score"], 0.58 * candidate["depth_shape_score"]
+            candidate["template_score"], 0.75 * candidate["depth_shape_score"]
         )
         selection_score = (
-            0.48 * appearance_score + 0.34 * plane_score + 0.18 * row_score
+            0.55 * appearance_score + 0.25 * plane_score + 0.20 * row_score
         )
         candidate.update(
             {
@@ -640,26 +691,49 @@ def main():
         )
 
     visualization = image.copy()
-    for tray in trays:
+    for index, tray in enumerate(trays):
+        detection_bbox = tray.get("detection_bbox", tray["bbox"])
+        if detection_bbox != tray["bbox"]:
+            dx1, dy1, dx2, dy2 = detection_bbox
+            cv2.rectangle(
+                visualization, (dx1, dy1), (dx2, dy2), (255, 255, 0), 1
+            )
         x1, y1, x2, y2 = tray["bbox"]
         cv2.rectangle(visualization, (x1, y1), (x2, y2), (0, 255, 0), 3)
+        center_x, center_y = tray["center_pixel"]
+        cv2.circle(visualization, (center_x, center_y), 4, (0, 0, 255), -1)
+        label = "{} s={:.2f} z={:.3f}m {}".format(
+            tray["id"],
+            tray["selection_score"],
+            tray["depth_m"],
+            tray.get("geometry_source", "unknown"),
+        )
+        label_position = (18, 25 + 24 * index)
         cv2.putText(
             visualization,
-            "{} s={:.2f} z={:.3f}m".format(
-                tray["id"], tray["selection_score"], tray["depth_m"]
-            ),
-            (x1, max(18, y1 - 6)),
+            label,
+            label_position,
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.48,
+            (0, 0, 0),
+            3,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            visualization,
+            label,
+            label_position,
             cv2.FONT_HERSHEY_SIMPLEX,
             0.48,
             (0, 255, 0),
-            2,
+            1,
             cv2.LINE_AA,
         )
 
     status = "ok" if len(trays) == args.expected_count else "count_mismatch"
     payload = {
         "status": status,
-        "algorithm": "multiscale_rgbd_shelf_calibration_v4",
+        "algorithm": "multiscale_rgbd_object_geometry_v5",
         "source_frame": camera_info.header.frame_id,
         "target_frame": args.target_frame,
         "search_roi": roi,
@@ -672,6 +746,13 @@ def main():
             "height_scales": height_scales,
             "edge_weight": args.edge_weight,
             "depth_band_tolerance_m": args.depth_band_tolerance,
+            "geometry_depth_score": args.geometry_depth_score,
+            "appearance_depth_scale": 0.75,
+            "selection_weights": {
+                "appearance": 0.55,
+                "plane": 0.25,
+                "row": 0.20,
+            },
         },
         "perspective_model": {
             "anchor_center_u": anchor_u,
@@ -700,7 +781,7 @@ def main():
             "calibration_file": args.calibration_file or None,
             "shelf_knots": calibration_knots,
         },
-        "depth_method": "component_median_or_bbox_percentile",
+        "depth_method": "rgbd_component_geometry_or_template_percentile",
         "upper_trays": trays,
         "candidates": candidates,
     }
