@@ -16,7 +16,8 @@
 ```text
 label_smt_trays.py              # 离线图片标注：给保存下来的图片画料盘候选框
 scene3_environment_probe.py     # 服务器环境检查：ROS 话题、服务、TF、Python 包
-scene3_live_perception.py       # 在线视觉测试：读取相机 RGB-D，输出 JSON 和标注图
+scene3_live_perception.py       # 旧版轮廓检测与 RGB-D 调试
+scene3_upper_tray_perception.py  # 正式上层模板检测：输出深度和 base_link 坐标
 ```
 
 ## 服务器更新代码
@@ -41,7 +42,7 @@ git clone https://github.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei.git too
 
 ```bash
 cd /root/kuavo_ws
-source devel/setup.zsh
+source devel/setup.bash
 rosrun challenge_cup_task_template challenge_task.py --scene scene3 --seed 3
 ```
 
@@ -53,7 +54,7 @@ rosrun challenge_cup_task_template challenge_task.py --scene scene3 --seed 3
 
 ```bash
 cd /root/kuavo_ws
-source devel/setup.zsh
+source devel/setup.bash
 python3 tools/工具/视觉/scene3_server/scene3_environment_probe.py | tee /tmp/scene3_environment.json
 ```
 
@@ -69,7 +70,7 @@ ls /root/kuavo_ws/tools/工具/视觉/scene3_server
 
 ```bash
 cd /root/kuavo_ws
-source devel/setup.zsh
+source devel/setup.bash
 python3 tools/工具/视觉/scene3_server/scene3_live_perception.py --level upper --output-dir /tmp/scene3_upper | tee /tmp/scene3_perception.log
 ```
 
@@ -86,19 +87,26 @@ python3 tools/工具/视觉/scene3_server/scene3_live_perception.py --level uppe
 cat /tmp/scene3_upper/tray_detection.json
 ```
 
+## 正式上层料盘感知
+
+完成一次上层料盘模板选择后，在容器终端运行：
+
+```bash
+cd /root/kuavo_ws
+source devel/setup.bash
+python3 tools/工具/视觉/scene3_server/scene3_upper_tray_perception.py \
+  --template vision_debug/scene3_seed3_live/upper_tray_template.png \
+  --output-dir vision_debug/scene3_upper_live
+```
+
+正式节点会：
+
+- 在上层货架区域自动匹配料盘
+- 使用候选框内第 10 百分位深度，避免读到料盘后方背景
+- 输出相机坐标和 `base_link_xyz_m`
+- 保存 `upper_trays.jpg`、`upper_trays.json`
+- 发布只读结果话题 `/scene3/upper_trays`
+
 ## 下一步判断
 
-如果 `tray_candidates.jpg` 框到了正确的上层料盘，就继续做：
-
-- 反复跑不同 seed
-- 调 ROI 和阈值
-- 用 TF 把 `camera_xyz_m` 转到机器人基座坐标
-- 再接机械臂预抓取动作
-
-如果框错了，先把下面三个东西发出来再改参数：
-
-```text
-/tmp/scene3_environment.json
-/tmp/scene3_upper/tray_detection.json
-/tmp/scene3_upper/tray_candidates.jpg
-```
+当前流程已经在 seed 3 找到 3 个上层料盘并完成 `base_link` 坐标转换。接入机械臂前，至少再测试 3 个不同 seed；只有候选数量、深度和坐标都稳定后，才开始预抓取动作。
