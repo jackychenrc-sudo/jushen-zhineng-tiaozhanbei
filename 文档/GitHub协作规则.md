@@ -1,57 +1,47 @@
 # GitHub 协作规则
 
+这份文档只规定协作边界，不教具体命令。熟悉 Git 的同学按自己的习惯操作；不熟悉的同学可以问队友或用 GitHub Desktop。
+
 ## 分支命名
 
-每个人不要直接改 `main`。
+每个人不要直接改 `main`，使用自己的分支。
 
-建议队友分支用“场景 + 姓名拼音”，中文看得懂，命令行也稳定：
+| 成员 | 分支名 |
+| --- | --- |
+| 闫帅辰 | `vision-yanshuaichen` |
+| 王森 | `scene3-wangsen` |
+| 王仔俊 | `scene1-wangzijun` |
+| 史智涛 | `scene2-shizhitao` |
+| Kevin | `scene2-kevin` |
+| 窦欣悦 | `docs-douxinyue` |
+
+PR 标题可以写中文，例如：
 
 ```text
-scene1-wangzijun
-scene2-shizhitao-kevin
-scene3-wangsen
-vision-yanshuaichen
-docs-douxinyue
-```
-
-也可以在 GitHub 页面上给 PR 标题写中文，例如：
-
-```text
-Scene3：王森动作骨架
-视觉：闫帅辰 depth 转 3D 坐标
+Scene3：王森更新动作骨架
+视觉：闫帅辰更新料盘定位结果
 测试：窦欣悦更新测试记录
 ```
 
-## 每天开工
+## 每天同步节奏
 
-```bash
-git checkout main
-git pull
+```text
+早上：确认自己分支是最新的。
+白天：在自己负责范围内自由实现。
+晚上：提交自己的分支，说明今天做了什么、证据在哪里、卡点是什么。
 ```
 
-新建自己的分支：
+## 负责范围
 
-```bash
-git checkout -b vision-yanshuaichen
+```text
+Scene1 组：任务代码参考/场景一_包裹称重入箱
+Scene2 组：任务代码参考/场景二_零件分拣
+Scene3 组：任务代码参考/场景三_SMT料盘出库
+视觉组：任务代码参考/视觉与坐标、工具/视觉
+测试同学：文档、最终提交包
 ```
 
-如果分支已经存在：
-
-```bash
-git checkout vision-yanshuaichen
-git pull origin vision-yanshuaichen
-```
-
-## 提交代码
-
-```bash
-git status
-git add <改过的文件>
-git commit -m "vision: save depth and export tray xyz"
-git push origin vision-yanshuaichen
-```
-
-提交信息可以中英文混合，但建议简短清楚。
+这些目录只是协作参考区。真正接入比赛时，最终代码仍然要整理进官方 `challenge_cup_task_template` 功能包。
 
 ## 不要提交这些
 
@@ -62,43 +52,25 @@ log/
 *.bag
 *.mp4
 *.avi
+*.mov
 *.pt
 *.pth
 大型数据集
 大模型权重
 ```
 
-大文件放网盘，只在 README 或测试记录里贴路径。
+大文件放网盘或服务器路径，只在测试记录里写清楚位置。
 
-## 每晚合并
+## 每晚合并标准
 
-1. 每个人 push 自己分支。
-2. 在 GitHub 开 Pull Request。
-3. 测试同学看能否运行。
-4. 能跑就合并到 main。
-5. main 必须保持能启动。
+能合并到 `main` 的内容应满足：
+
+- 说得清楚改了什么。
+- 有运行结果、截图、视频、日志或输出文件之一。
+- 不影响其他人已有工作。
+- 不包含大文件或临时文件。
+- 如果没有验证，需要明确写“未验证原因”。
 
 ## 关键原则
 
-不要多人同时改同一个大文件。
-
-推荐结构：
-
-```text
-Scene1 组主要改 任务代码参考/场景一_包裹称重入箱 或官方包里的 scene1_task.py
-Scene2 组主要改 任务代码参考/场景二_零件分拣 或官方包里的 scene2_task.py
-Scene3 组主要改 任务代码参考/场景三_SMT料盘出库 或官方包里的 scene3_task.py
-视觉组主要改 任务代码参考/视觉与坐标 和 工具/视觉
-测试同学主要改 文档
-```
-
-最终接入官方 `challenge_task.py` 时，只保留一个统一入口：
-
-```python
-if scene == "scene1":
-    run_scene1()
-elif scene == "scene2":
-    run_scene2()
-elif scene == "scene3":
-    run_scene3()
-```
+不要多人长期同时改同一个大文件。最终接入官方入口时再统一整合，平时尽量按 scene 或模块拆开。
