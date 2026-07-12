@@ -2,7 +2,7 @@
 
 本仓库用于管理 2026 挑战杯具身智能操作赛 / Kuavo 仿真初赛的团队代码、视觉工具、任务记录和提交材料。
 
-当前策略：先做可得分闭环，再做稳定性优化。所有代码和文档都围绕三个仿真场景服务：
+当前策略：先做可得分闭环，再做稳定性优化。所有代码和文档都围绕三个仿真场景服务。
 
 | 场景 | 任务 | 负责人 | 第一阶段目标 |
 | --- | --- | --- | --- |
@@ -17,27 +17,29 @@
 ```text
 .
 ├── README.md
-├── docs/
-│   ├── day2_plan.md              # 明天环境配置好后的具体任务板
-│   ├── git_workflow.md           # 团队 GitHub 协作规则
-│   ├── submit_checklist.md       # 最终提交检查清单
-│   ├── team_roles.md             # 成员分工和交付物
-│   └── test_record.md            # 每天测试记录模板
-├── src/
-│   ├── scene1/README.md          # Scene1 工作区说明
-│   ├── scene2/README.md          # Scene2 工作区说明
-│   ├── scene3/README.md          # Scene3 工作区说明
-│   └── vision/README.md          # 视觉模块接口说明
-├── submission/
-│   └── README.md                 # 最终提交包整理说明
-└── tools/
-    └── vision/
-        ├── README.md
-        ├── save_compressed_image.py
-        ├── save_depth_image.py
-        ├── detect_tray_opencv.py
-        └── detect_tray_3d.py
+├── 文档/
+│   ├── 第二天任务板.md
+│   ├── GitHub协作规则.md
+│   ├── 提交检查清单.md
+│   ├── 团队分工.md
+│   └── 测试记录.md
+├── 任务代码参考/
+│   ├── 场景一_包裹称重入箱/README.md
+│   ├── 场景二_零件分拣/README.md
+│   ├── 场景三_SMT料盘出库/README.md
+│   └── 视觉与坐标/README.md
+├── 工具/
+│   └── 视觉/
+│       ├── README.md
+│       ├── save_compressed_image.py
+│       ├── save_depth_image.py
+│       ├── detect_tray_opencv.py
+│       └── detect_tray_3d.py
+└── 最终提交包/
+    └── README.md
 ```
+
+说明：目录和文档尽量用中文，方便队友理解；真正要运行的 Python 脚本保留英文文件名，避免命令行、Python import、ROS 环境出现编码问题。
 
 ## 当前进展
 
@@ -63,7 +65,7 @@ Scene3 RGB 图检测料盘 bbox
 
 ## 明天优先级
 
-先看 [docs/day2_plan.md](docs/day2_plan.md)。
+先看 [文档/第二天任务板.md](文档/第二天任务板.md)。
 
 每个人都要产出可运行结果，不要只研究方案：
 
@@ -74,20 +76,31 @@ Scene3 RGB 图检测料盘 bbox
 
 ## 服务器下载工具
 
-在远程 Ubuntu 的比赛仓库根目录执行：
+如果是整个仓库 clone：
+
+```bash
+cd ~/code/leju-kuavo-challenge-cup-2026-master
+git clone https://github.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei.git team_repo
+cd team_repo
+git checkout 中文结构整理
+```
+
+如果只下载视觉工具，可以执行：
 
 ```bash
 cd ~/code/leju-kuavo-challenge-cup-2026-master
 mkdir -p tools/vision
 cd tools/vision
 
-curl -L -O https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/repo-structure-day2/tools/vision/save_compressed_image.py
-curl -L -O https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/repo-structure-day2/tools/vision/save_depth_image.py
-curl -L -O https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/repo-structure-day2/tools/vision/detect_tray_opencv.py
-curl -L -O https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/repo-structure-day2/tools/vision/detect_tray_3d.py
+curl -L -o save_compressed_image.py "https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/中文结构整理/工具/视觉/save_compressed_image.py"
+curl -L -o save_depth_image.py "https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/中文结构整理/工具/视觉/save_depth_image.py"
+curl -L -o detect_tray_opencv.py "https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/中文结构整理/工具/视觉/detect_tray_opencv.py"
+curl -L -o detect_tray_3d.py "https://raw.githubusercontent.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei/中文结构整理/工具/视觉/detect_tray_3d.py"
 
 chmod +x *.py
 ```
+
+如果 curl 对中文 URL 不稳定，就用 `git clone` 方式。
 
 ## 比赛规则提醒
 
