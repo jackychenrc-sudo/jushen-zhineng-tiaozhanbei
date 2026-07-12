@@ -1,126 +1,71 @@
-# Scene3 服务器视觉首轮测试
+# Scene3 上层料盘视觉与靠近成果
 
-这个目录用于 Scene3「SMT 料盘出库」的第一轮服务器测试。
+这个目录保存 Scene3「SMT 料盘出库」目前已经跑通的视觉、数据采集和机器人靠近代码。代码仍处于联调阶段，不是完整比赛程序。
 
-当前目标只有一个：
+## 本次上传的两个核心文件
 
-- 从头部相机读取 RGB-D
-- 标出上层/下层 SMT 料盘候选框
-- 读取候选点深度
-- 输出相机坐标系下的 `camera_xyz_m`
+### `scene3_upper_tray_perception.py`
 
-注意：这里的脚本只做视觉，不会控制机器人移动。
+**大概是什么：**
 
-## 文件说明
+头部 RGB-D 相机的上层料盘感知程序。它综合多尺度外观匹配、深度竖直轮廓、货架平面和同层排列关系，从随机摆放的上层料盘中筛选目标，并输出像素框、深度以及 `base_link` 三维坐标。
 
-```text
-label_smt_trays.py              # 离线图片标注：给保存下来的图片画料盘候选框
-scene3_environment_probe.py     # 服务器环境检查：ROS 话题、服务、TF、Python 包
-scene3_live_perception.py       # 旧版轮廓检测与 RGB-D 调试
-scene3_upper_tray_perception.py  # 正式上层模板检测：输出深度和 base_link 坐标
-scene3_dataset_collector.py        # 按 seed 采集 RGB、深度、内参和 TF
-```
+**上传的意义：**
 
-## 服务器更新代码
+它把前期“只能在一张图片上粗略框选”推进到了实时 RGB-D 定位，可以给后续靠近和机械臂动作提供目标位置。V5 版本还区分模板识别框与 RGB-D 完整物体框，用于减少机器人靠近后把货架结构误认为料盘的问题。
 
-如果服务器上已经 clone 过本仓库，一般在比赛项目目录下执行：
+**目前做到的程度：**
 
-```bash
-cd /home/shx/code/leju-kuavo-challenge-cup-2026-master/tools
-git pull
-```
+- 已在多个 seed、多个前后距离下检测上层 3 个料盘。
+- 已输出相机坐标和 `base_link` 原始坐标。
+- 已保存最终框图、全部候选图和 JSON 数据。
+- 已加入近距离误框抑制，但当前近距离结果仍需继续人工核验和跨 seed 测试。
+- 目前只处理上层料盘，还不能保证所有随机场景完全正确。
 
-如果服务器上还没有 clone：
+### `scene3_upper_approach.py`
 
-```bash
-cd /home/shx/code/leju-kuavo-challenge-cup-2026-master
-git clone https://github.com/jackychenrc-sudo/jushen-zhineng-tiaozhanbei.git tools
-```
+**大概是什么：**
 
-## 启动 Scene3
+读取上层视觉 JSON 的短距离靠近程序。它先检查检测数量、综合分数、深度形状、RGB-D 几何来源和完整物体框；全部通过后，才能规划或执行一次受限的向前短脉冲。
 
-在 Docker / ROS 终端 1：
+**上传的意义：**
 
-```bash
-cd /root/kuavo_ws
-source devel/setup.bash
-rosrun challenge_cup_task_template challenge_task.py --scene scene3 --seed 3
-```
+它把“看见料盘”接到了机器人移动，形成“检测、短距离前进、停止、重新检测”的初步视觉闭环，同时避免一次走得过远。
 
-这个终端保持运行，不要关。
+**目前做到的程度：**
 
-## 跑环境检查
+- 已完成 3 次真实短脉冲测试，视觉测得位移约为 `0.056 m`、`0.057 m` 和 `0.084 m`。
+- 每次运动后都能重新检测并更新料盘距离。
+- 当前只控制向前移动，不控制横移、机械臂和夹爪。
+- 只有显式执行参数和确认口令同时存在时才会运动；普通运行只是规划检查。
+- 还没有完成料盘抓取、抽出、搬运和放入出库区。
 
-在 Docker / ROS 终端 2：
+## 当前总进度
 
-```bash
-cd /root/kuavo_ws
-source devel/setup.bash
-python3 tools/工具/视觉/scene3_server/scene3_environment_probe.py | tee /tmp/scene3_environment.json
-```
+| 环节 | 状态 | 说明 |
+|---|---|---|
+| 读取头部 RGB-D | 已完成 | RGB、深度和相机内参可正常获取 |
+| 上层料盘候选检测 | 已跑通 | 多个 seed 能输出 3 个目标，仍需扩大测试 |
+| 三维坐标转换 | 已完成首版 | 已转换到 `base_link`，抓取前还需实测标定 |
+| 视觉闭环靠近 | 已完成首版 | 已验证 3 次短距离前进与重新检测 |
+| 上层机械臂预抓取 | 未完成 | 尚未发送伸臂动作 |
+| 夹取与抽出 | 未完成 | 尚未验证夹爪和抽取轨迹 |
+| 放入出库区 | 未完成 | 还没有形成上层 10 分完整流程 |
+| 下层料盘 | 未开始 | 等上层流程稳定后再做 |
 
-如果提示找不到文件，先检查：
+## 输出文件怎么看
 
-```bash
-ls /root/kuavo_ws/tools/工具/视觉/scene3_server
-```
+- `upper_trays.json`：最终入选料盘的框、得分、深度和三维坐标。
+- `upper_trays.jpg`：最终入选结果，用于确认绿色框是否真的落在料盘上。
+- `upper_candidates.jpg`：全部候选及其分数，用于分析漏检和误检。
 
-## 跑视觉检测
+视觉结果即使显示 3 个目标，也必须同时检查 RGB-D 几何来源和最终框图，不能只按数量决定机器人继续运动。
 
-继续在 Docker / ROS 终端 2：
+## 目录内其他辅助文件
 
-```bash
-cd /root/kuavo_ws
-source devel/setup.bash
-python3 tools/工具/视觉/scene3_server/scene3_live_perception.py --level upper --output-dir /tmp/scene3_upper | tee /tmp/scene3_perception.log
-```
+- `scene3_dataset_collector.py`：按 seed 保存 RGB、深度、相机内参和 TF，供跨场景测试。
+- `label_smt_trays.py`：手工选择料盘区域，主要用于早期模板和调试。
+- `scene3_environment_probe.py`：检查相机话题、服务和 TF 是否可用。
+- `scene3_live_perception.py`：早期实时 RGB-D 感知版本，为当前核心感知程序提供基础函数。
 
-输出文件：
-
-```text
-/tmp/scene3_upper/tray_detection.json
-/tmp/scene3_upper/tray_candidates.jpg
-```
-
-查看 JSON：
-
-```bash
-cat /tmp/scene3_upper/tray_detection.json
-```
-
-## 正式上层料盘感知
-
-完成一次上层料盘模板选择后，在容器终端运行：
-
-```bash
-cd /root/kuavo_ws
-source devel/setup.bash
-python3 tools/工具/视觉/scene3_server/scene3_upper_tray_perception.py \
-  --template vision_debug/scene3_seed3_live/upper_tray_template.png \
-  --output-dir vision_debug/scene3_upper_live
-```
-
-正式节点会：
-
-- 以低阈值召回上层候选，再用高分料盘建立 RGB-D 货架平面并过滤假框
-- 使用候选框内第 10 百分位深度，避免读到料盘后方背景
-- 输出相机坐标和 `base_link_xyz_m`
-- 保存 `upper_trays.jpg`、`upper_candidates.jpg`、`upper_trays.json`
-- 发布只读结果话题 `/scene3/upper_trays`
-
-## 采集跨 seed RGB-D 数据
-
-启动指定 seed 的 Scene3 后，在容器终端运行：
-
-```bash
-cd /root/kuavo_ws
-source devel/setup.bash
-python3 tools/工具/视觉/scene3_server/scene3_dataset_collector.py \
-  --seed 3 --camera head --count 10
-```
-
-数据按 `seed/camera/run` 保存到 `vision_dataset/scene3`。每帧包含 RGB、米制浮点深度、16 位毫米深度 PNG、深度预览、相机内参、相机到 `base_link` 的 TF 和 JSON 清单。采集器只读取相机与 TF，不控制机器人；原始数据不要提交到 GitHub。
-
-## 下一步判断
-
-当前流程已经在 seed 3 找到 3 个上层料盘并完成 `base_link` 坐标转换。接入机械臂前，至少再测试 3 个不同 seed；只有候选数量、深度和坐标都稳定后，才开始预抓取动作。
+原始数据集、运行日志和大量调试图片不上传 GitHub，只同步有复用价值的代码和阶段性说明。
