@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 1.4 seconds
-Output:
 #!/usr/bin/env python3
 """Detect randomly placed Scene3 upper SMT trays with RGB-D geometry."""
 
