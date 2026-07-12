@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan or execute one short Scene3 forward approach pulse."""
+"""鏍规嵁鍙俊瑙嗚缁撴灉瑙勫垝鎴栨墽琛屼竴娆?Scene3 鍚戝墠鐭剦鍐层€?""
 
 import argparse
 import json
@@ -25,6 +25,7 @@ def parse_args():
 
 
 def load_detection(path):
+    """璇诲彇妫€娴嬬粨鏋滐紱鏁伴噺鎴栫姸鎬佸紓甯告椂绂佹鐢熸垚杩愬姩璁″垝銆?""
     detection_path = Path(path)
     if not detection_path.is_file():
         raise ValueError("detection JSON does not exist: {}".format(path))
@@ -40,6 +41,7 @@ def load_detection(path):
 
 
 def raw_xyz(tray):
+    """闈犺繎闃舵鍙娇鐢ㄦ湭缁忕粡楠屽叕寮忎慨姝ｇ殑 base_link 鍧愭爣銆?""
     values = tray.get("base_link_xyz_raw_m", tray.get("base_link_xyz_m"))
     if not isinstance(values, list) or len(values) != 3:
         raise ValueError("tray does not contain a valid base_link XYZ")
@@ -47,7 +49,7 @@ def raw_xyz(tray):
 
 
 def build_plan(args, data, trays):
-    for tray in trays:
+    # 鍥涢亾杩愬姩闂細鎬诲垎銆佹繁搴﹀舰鐘躲€丷GB-D 鍑犱綍鏉ユ簮銆佸畬鏁寸墿浣撴銆?    # 浠讳竴鏉′欢涓嶆弧瓒抽兘鐩存帴鎶ラ敊锛屼笉鍏佽浠呭嚟鈥滄娴嬪埌涓変釜妗嗏€濈户缁墠杩涖€?    for tray in trays:
         score = float(tray.get("selection_score", 0.0))
         if score < args.minimum_selection_score:
             raise ValueError(
@@ -78,7 +80,7 @@ def build_plan(args, data, trays):
             )
 
     tray_positions = [raw_xyz(tray) for tray in trays]
-    shelf_distance = float(statistics.median(position[0] for position in tray_positions))
+    # 鐢ㄤ笁涓枡鐩樺墠鍚戣窛绂荤殑涓綅鏁颁及璁¤揣鏋惰窛绂伙紝闄嶄綆鍗曚釜娣卞害寮傚父鐨勫奖鍝嶃€?    shelf_distance = float(statistics.median(position[0] for position in tray_positions))
     if not 0.40 <= shelf_distance <= 2.50:
         raise ValueError(
             "implausible shelf distance {:.3f} m; refusing motion".format(
@@ -86,7 +88,7 @@ def build_plan(args, data, trays):
             )
         )
 
-    target_index = min(
+    # 杩欓噷鍙褰曟渶閫傚悎鍙虫墜鐨勫€欓€夛紝鐭剦鍐叉湰韬笉鍋氭í绉汇€佷几鑷傛垨澶圭埅鍔ㄤ綔銆?    target_index = min(
         range(len(trays)),
         key=lambda index: (
             abs(tray_positions[index][1] - args.preferred_right_hand_y),
@@ -129,6 +131,7 @@ def build_plan(args, data, trays):
 
 
 def execute_forward_pulse(args, plan):
+    """鍙彂甯冧竴娆″彈璺濈銆侀€熷害鍜屾椂闀块檺鍒剁殑鍓嶈繘鎸囦护銆?""
     if args.confirmation != "FORWARD_ONLY":
         raise ValueError(
             "execution requires --confirmation FORWARD_ONLY"
@@ -165,7 +168,7 @@ def execute_forward_pulse(args, plan):
             publisher.publish(forward)
             rate.sleep()
     finally:
-        for _ in range(12):
+        # 鏃犺姝ｅ父缁撴潫杩樻槸涓€斿紓甯革紝閮借繛缁彂甯冮浂閫熷害锛岀‘淇濇満鍣ㄤ汉鍋滀綇銆?        for _ in range(12):
             publisher.publish(stop)
             rate.sleep()
     plan["execution"] = "forward_pulse_completed"
