@@ -8,6 +8,10 @@
 
 [先看这个_队友操作说明.md](先看这个_队友操作说明.md)
 
+Scene3 今天下午联调先看：
+
+[文档/Scene3_Day2_视觉动作联调方案.md](文档/Scene3_Day2_视觉动作联调方案.md)
+
 测试与提交负责人先看：
 
 [文档/窦欣悦_测试与提交路线.md](文档/窦欣悦_测试与提交路线.md)
@@ -34,6 +38,7 @@
 ├── 先看这个_队友操作说明.md
 ├── 文档/
 │   ├── 第二天任务板.md
+│   ├── Scene3_Day2_视觉动作联调方案.md
 │   ├── GitHub协作规则.md
 │   ├── 提交检查清单.md
 │   ├── 团队分工.md
@@ -50,6 +55,7 @@
 │       ├── save_compressed_image.py
 │       ├── save_depth_image.py
 │       ├── detect_tray_opencv.py
+│       ├── label_smt_trays.py
 │       └── detect_tray_3d.py
 └── 最终提交包/
     └── README.md
@@ -67,11 +73,14 @@
 2. 已确认头部、左手、右手相机话题，均有 RGB 和 depth。
 3. 头部 RGB 图可以保存，能看到货架和 SMT 料盘。
 4. `detect_tray_opencv.py` 已经能粗框货架 / 料盘候选区域。
-5. GitHub 到服务器的代码同步流程已跑通。
+5. `label_smt_trays.py` 已加入，用于标注 Scene3 上层/下层候选料盘。
+6. GitHub 到服务器的代码同步流程已跑通。
 
-## 明天优先级
+## 今天优先级
 
 先看 [文档/第二天任务板.md](文档/第二天任务板.md)。
+
+Scene3 视觉和动作联调看 [文档/Scene3_Day2_视觉动作联调方案.md](文档/Scene3_Day2_视觉动作联调方案.md)。
 
 每个人只需要明确三件事：
 
