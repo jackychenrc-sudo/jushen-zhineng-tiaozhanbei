@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""浣跨敤澶撮儴 RGB-D 鐩告満妫€娴?Scene3 闅忔満鎽嗘斁鐨勪笂灞?SMT 鏂欑洏銆?""
+"""使用头部 RGB-D 相机检测 Scene3 随机摆放的上层 SMT 料盘。"""
 
 import argparse
 import json
@@ -61,7 +61,7 @@ def bbox_center(bbox):
 
 
 def suppress_matches(matches, nms_pixels, max_matches):
-    """鍚堝苟鍚屼竴鐩爣鐨勬ā鏉垮€欓€変笌娣卞害鍊欓€夛紝鍚屾椂淇濈暀涓ょ被璇佹嵁銆?""
+    """合并同一目标的模板候选与深度候选，同时保留两类证据。"""
     selected = []
     for match in sorted(matches, key=lambda item: item["score"], reverse=True):
         center_x, center_y = match["center_pixel"]
@@ -82,7 +82,9 @@ def suppress_matches(matches, nms_pixels, max_matches):
                 )
                 existing_depth_score = existing.get("depth_shape_score", 0.0)
                 incoming_depth_score = match.get("depth_shape_score", 0.0)
-                # 妯℃澘鍊欓€夎礋璐ｂ€滃儚涓嶅儚鏂欑洏鈥濓紝娣卞害鍊欓€夎礋璐ｂ€滃畬鏁磋疆寤撳湪鍝噷鈥濄€?                # 鍚堝苟鏃朵笉鑳借灏哄杈冨皬鐨勬ā鏉挎瑕嗙洊鎺夋洿鍙潬鐨勬繁搴﹀妗嗐€?                best_depth = match if incoming_depth_score > existing_depth_score else existing
+                # 模板候选负责“像不像料盘”，深度候选负责“完整轮廓在哪里”。
+                # 合并时不能让尺寸较小的模板框覆盖掉更可靠的深度外框。
+                best_depth = match if incoming_depth_score > existing_depth_score else existing
                 best_depth_fields = {}
                 for key in (
                     "depth_bbox",
@@ -120,7 +122,7 @@ def multiscale_template_matches(
     edge_weight,
     max_matches,
 ):
-    """鍦ㄥ楂樺涓昂搴︿笂鍖归厤鏂欑洏澶栬锛岄€傚簲鏈哄櫒浜洪潬杩戝悗鐨勫昂瀵稿彉鍖栥€?""
+    """在宽高多个尺度上匹配料盘外观，适应机器人靠近后的尺寸变化。"""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
     gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
@@ -229,7 +231,8 @@ def depth_vertical_proposals(
     near_plane = valid & (np.abs(search - reference_depth) <= depth_tolerance)
     mask = (near_plane.astype(np.uint8) * 255)
 
-    # 淇濈暀绔栫洿鏂欑洏琛ㄩ潰锛屽敖閲忔姂鍒惰揣鏋舵í姊佷骇鐢熺殑姘村钩杩為€氬尯鍩熴€?    vertical = cv2.morphologyEx(
+    # 保留竖直料盘表面，尽量抑制货架横梁产生的水平连通区域。
+    vertical = cv2.morphologyEx(
         mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (2, 11))
     )
     vertical = cv2.morphologyEx(
@@ -508,7 +511,9 @@ def main():
     for rank_by_score, match in enumerate(
         sorted(matches, key=lambda item: item["score"], reverse=True)
     ):
-        # detection_bbox 鍙〃绀烘ā鏉胯瘑鍒尯鍩燂紱object_bbox 鎵嶆槸娣卞害杞粨缁欏嚭鐨?        # 瀹屾暣鐩爣鍖哄煙銆傚悗缁笁缁存姇褰卞拰鎶撳彇鐐瑰簲浼樺厛浣跨敤 object_bbox銆?        detection_bbox = list(match.get("template_bbox", match["bbox"]))
+        # detection_bbox 只表示模板识别区域；object_bbox 才是深度轮廓给出的
+        # 完整目标区域。后续三维投影和抓取点应优先使用 object_bbox。
+        detection_bbox = list(match.get("template_bbox", match["bbox"]))
         detection_center = list(
             match.get("template_center_pixel", match["center_pixel"])
         )
@@ -590,8 +595,9 @@ def main():
         row_score = math.exp(
             -0.5 * (row_error / max(args.row_tolerance_pixels, 1e-6)) ** 2
         )
-        # 杩戣窛绂绘椂璐ф灦缁撴瀯鍙兘鑾峰緱杈冮珮骞抽潰鍒嗭紝鍥犳鎻愰珮娣卞害褰㈢姸璇佹嵁鐨勬潈閲嶏紝
-        # 闃叉鈥滄暟閲忔纭絾妗嗗埌璐ф灦绔嬫煴鈥濈殑璇€夌户缁繘鍏ュ姩浣滄ā鍧椼€?        appearance_score = max(
+        # 近距离时货架结构可能获得较高平面分，因此提高深度形状证据的权重，
+        # 防止“数量正确但框到货架立柱”的误选继续进入动作模块。
+        appearance_score = max(
             candidate["template_score"], 0.75 * candidate["depth_shape_score"]
         )
         selection_score = (
@@ -627,7 +633,9 @@ def main():
         calibration_offset = interpolate_shelf_offset(
             calibration_knots, shelf_coordinate
         )
-        # raw_xyz 鏄浉鏈哄拰 TF 鐨勭洿鎺ユ祴閲忓€硷紱corrected_xyz 鍙敤浜庤褰曞疄楠屼慨姝ｃ€?        # 鏈樉寮忎紶鍏?--use-corrected-output 鏃讹紝瀵瑰浠嶈緭鍑哄師濮嬪潗鏍囷紝閬垮厤杩囨嫙鍚?seed銆?        raw_xyz = np.array(candidate["base_link_xyz_m"], dtype=np.float64)
+        # raw_xyz 是相机和 TF 的直接测量值；corrected_xyz 只用于记录实验修正。
+        # 未显式传入 --use-corrected-output 时，对外仍输出原始坐标，避免过拟合 seed。
+        raw_xyz = np.array(candidate["base_link_xyz_m"], dtype=np.float64)
         corrected_xyz = raw_xyz + plane_correction + calibration_offset
         candidate.update(
             {
@@ -694,7 +702,8 @@ def main():
 
     visualization = image.copy()
     for index, tray in enumerate(trays):
-        # 闈掕壊缁嗘锛氭ā鏉胯瘑鍒尯鍩燂紱缁胯壊绮楁锛歊GB-D 瀹屾暣杞粨锛涚孩鐐癸細涓夌淮鎶曞奖鍍忕礌銆?        detection_bbox = tray.get("detection_bbox", tray["bbox"])
+        # 青色细框：模板识别区域；绿色粗框：RGB-D 完整轮廓；红点：三维投影像素。
+        detection_bbox = tray.get("detection_bbox", tray["bbox"])
         if detection_bbox != tray["bbox"]:
             dx1, dy1, dx2, dy2 = detection_bbox
             cv2.rectangle(
