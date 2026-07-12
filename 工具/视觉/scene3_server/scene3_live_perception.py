@@ -22,6 +22,8 @@ from label_smt_trays import (
     best_by_level,
     contour_candidates,
     draw_result,
+    make_dark_mask,
+    normalized_roi_to_bbox,
     parse_roi,
 )
 
@@ -118,6 +120,37 @@ def draw_selected(image, candidate, depth_m, camera_xyz):
     cv2.circle(image, (u, v), 6, (0, 0, 255), -1)
 
 
+def write_debug_images(output_dir, image, depth_image, roi, split_y, candidates, dark_threshold):
+    raw_path = output_dir / "raw_rgb.jpg"
+    candidates_path = output_dir / "tray_candidates.jpg"
+    mask_path = output_dir / "debug_dark_mask.jpg"
+    depth_path = output_dir / "depth_preview.jpg"
+
+    cv2.imwrite(str(raw_path), image)
+    cv2.imwrite(str(candidates_path), draw_result(image, candidates, roi, split_y, max_per_level=8))
+
+    height, width = image.shape[:2]
+    x1, y1, x2, y2 = normalized_roi_to_bbox(roi, width, height)
+    debug_mask = np.zeros((height, width), dtype=np.uint8)
+    debug_mask[y1:y2, x1:x2] = make_dark_mask(image[y1:y2, x1:x2], dark_threshold)
+    cv2.imwrite(str(mask_path), debug_mask)
+
+    valid = np.isfinite(depth_image) & (depth_image > 0.05) & (depth_image < 10.0)
+    depth_preview = np.zeros(depth_image.shape[:2], dtype=np.uint8)
+    if np.any(valid):
+        clipped = np.clip(depth_image, 0.0, 5.0)
+        depth_preview = (255.0 - clipped / 5.0 * 255.0).astype(np.uint8)
+        depth_preview[~valid] = 0
+    cv2.imwrite(str(depth_path), depth_preview)
+
+    return {
+        "raw_rgb": str(raw_path),
+        "tray_candidates": str(candidates_path),
+        "debug_dark_mask": str(mask_path),
+        "depth_preview": str(depth_path),
+    }
+
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--level", choices=("upper", "lower"), default="upper")
@@ -162,10 +195,40 @@ def main():
         min_area=args.min_area,
         max_area=args.max_area,
     )
+    debug_paths = write_debug_images(
+        output_dir=output_dir,
+        image=image,
+        depth_image=depth_image,
+        roi=roi,
+        split_y=args.split_y,
+        candidates=candidates,
+        dark_threshold=args.dark_threshold,
+    )
+    json_path = output_dir / "tray_detection.json"
+
     selected = next((item for item in candidates if item.level == args.level), None)
     if selected is None:
+        payload = {
+            "status": "no_candidate",
+            "selected_level": args.level,
+            "camera_frame": camera_info.header.frame_id,
+            "rgb_stamp": rgb_message.header.stamp.to_sec(),
+            "depth_stamp": depth_message.header.stamp.to_sec(),
+            "roi": list(roi),
+            "split_y": args.split_y,
+            "dark_threshold": args.dark_threshold,
+            "min_area": args.min_area,
+            "max_area": args.max_area,
+            "best": best_by_level(candidates),
+            "candidates": [asdict(candidate) for candidate in candidates],
+            "debug_files": debug_paths,
+            "note": "No selected tray at requested level. Inspect raw_rgb.jpg, debug_dark_mask.jpg and tray_candidates.jpg.",
+        }
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         raise RuntimeError(
-            "no {} tray candidate found; inspect tray_candidates.jpg".format(args.level)
+            "no {} tray candidate found; inspect {}".format(
+                args.level, debug_paths["tray_candidates"]
+            )
         )
 
     z_m, valid_depth_pixels = median_depth(
@@ -176,7 +239,6 @@ def main():
     visualization = draw_result(image, candidates, roi, args.split_y, max_per_level=8)
     draw_selected(visualization, selected, z_m, camera_xyz)
     image_path = output_dir / "tray_candidates.jpg"
-    json_path = output_dir / "tray_detection.json"
     cv2.imwrite(str(image_path), visualization)
 
     payload = {
@@ -195,8 +257,12 @@ def main():
             "cx": float(camera_info.K[2]),
             "cy": float(camera_info.K[5]),
         },
+        "roi": list(roi),
+        "split_y": args.split_y,
+        "dark_threshold": args.dark_threshold,
         "best": best_by_level(candidates),
         "candidates": [asdict(candidate) for candidate in candidates],
+        "debug_files": debug_paths,
         "note": "camera_xyz_m is in the optical camera frame, not the robot base frame",
     }
     json_text = json.dumps(payload, ensure_ascii=False, indent=2)
