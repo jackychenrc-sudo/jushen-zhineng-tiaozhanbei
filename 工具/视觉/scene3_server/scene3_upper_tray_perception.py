@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-"""使用头部 RGB-D 相机检测 Scene3 随机摆放的上层 SMT 料盘。"""
-
 import argparse
 import json
 import math
@@ -61,7 +59,6 @@ def bbox_center(bbox):
 
 
 def suppress_matches(matches, nms_pixels, max_matches):
-    """合并同一目标的模板候选与深度候选，同时保留两类证据。"""
     selected = []
     for match in sorted(matches, key=lambda item: item["score"], reverse=True):
         center_x, center_y = match["center_pixel"]
@@ -82,8 +79,6 @@ def suppress_matches(matches, nms_pixels, max_matches):
                 )
                 existing_depth_score = existing.get("depth_shape_score", 0.0)
                 incoming_depth_score = match.get("depth_shape_score", 0.0)
-                # 模板候选负责“像不像料盘”，深度候选负责“完整轮廓在哪里”。
-                # 合并时不能让尺寸较小的模板框覆盖掉更可靠的深度外框。
                 best_depth = match if incoming_depth_score > existing_depth_score else existing
                 best_depth_fields = {}
                 for key in (
@@ -122,7 +117,6 @@ def multiscale_template_matches(
     edge_weight,
     max_matches,
 ):
-    """在宽高多个尺度上匹配料盘外观，适应机器人靠近后的尺寸变化。"""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     template_gray = cv2.cvtColor(template, cv2.COLOR_BGR2GRAY)
     gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
@@ -231,7 +225,6 @@ def depth_vertical_proposals(
     near_plane = valid & (np.abs(search - reference_depth) <= depth_tolerance)
     mask = (near_plane.astype(np.uint8) * 255)
 
-    # 保留竖直料盘表面，尽量抑制货架横梁产生的水平连通区域。
     vertical = cv2.morphologyEx(
         mask, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (2, 11))
     )
@@ -508,184 +501,7 @@ def main():
     )
 
     candidates = []
-    for rank_by_score, match in enumerate(
-        sorted(matches, key=lambda item: item["score"], reverse=True)
-    ):
-        # detection_bbox 只表示模板识别区域；object_bbox 才是深度轮廓给出的
-        # 完整目标区域。后续三维投影和抓取点应优先使用 object_bbox。
-        detection_bbox = list(match.get("template_bbox", match["bbox"]))
-        detection_center = list(
-            match.get("template_center_pixel", match["center_pixel"])
-        )
-        use_depth_geometry = bool(
-            match.get("depth_shape_score", 0.0) >= args.geometry_depth_score
-            and match.get("depth_bbox") is not None
-        )
-        object_bbox = list(
-            match["depth_bbox"] if use_depth_geometry else detection_bbox
-        )
-        object_center = list(
-            match.get("depth_center_pixel", bbox_center(object_bbox))
-            if use_depth_geometry
-            else detection_center
-        )
-        if use_depth_geometry and match.get("depth_override_m") is not None:
-            depth_m = float(match["depth_override_m"])
-            valid_pixels = int(valid_depth_values(depth_image, object_bbox).size)
-        else:
-            depth_m, valid_pixels = percentile_depth(
-                depth_image, detection_bbox, args.depth_percentile
-            )
-        camera_xyz = np.array(project_pixel(object_center, depth_m, camera_info))
-        target_xyz = rotation.dot(camera_xyz) + translation
-        candidate = dict(match)
-        candidate.update(
-            {
-                "candidate_id": "candidate_{}".format(rank_by_score),
-                "rank_by_score": rank_by_score,
-                "depth_m": depth_m,
-                "depth_percentile": args.depth_percentile,
-                "valid_depth_pixels": valid_pixels,
-                "camera_xyz_m": camera_xyz.tolist(),
-                "base_link_xyz_m": target_xyz.tolist(),
-                "detection_bbox": detection_bbox,
-                "detection_center_pixel": detection_center,
-                "object_bbox": object_bbox,
-                "object_center_pixel": object_center,
-                "geometry_source": (
-                    "rgbd_vertical" if use_depth_geometry else "template"
-                ),
-                "bbox": object_bbox,
-                "center_pixel": object_center,
-            }
-        )
-        candidate.pop("depth_override_m", None)
-        candidate.pop("proposal_depth_m", None)
-        candidates.append(candidate)
-
-    anchors = [
-        item for item in candidates if item["template_score"] >= args.anchor_score
-    ]
-    if len(anchors) < 2:
-        anchors = sorted(
-            candidates, key=lambda item: item["template_score"], reverse=True
-        )[:2]
-    plane_x = float(np.median([item["base_link_xyz_m"][0] for item in anchors]))
-    plane_z = float(np.median([item["base_link_xyz_m"][2] for item in anchors]))
-    anchor_u = float(np.median([item["center_pixel"][0] for item in anchors]))
-    anchor_y = float(np.median([item["center_pixel"][1] for item in anchors]))
-    row_slope, row_intercept = fit_row_model(anchors, anchor_y)
-    roi_x1, _, roi_x2, _ = pixel_roi(image.shape, roi)
-    shelf_width = float(max(1, roi_x2 - roi_x1))
-
-    eligible = []
-    for candidate in candidates:
-        u, v = candidate["center_pixel"]
-        relative_offset = abs(float(u) - anchor_u) / shelf_width
-        x_tolerance = args.plane_x_tolerance + args.perspective_x_weight * relative_offset
-        z_tolerance = args.plane_z_tolerance + args.perspective_z_weight * relative_offset
-        predicted_row_y = row_slope * float(u) + row_intercept
-        row_error = abs(float(v) - predicted_row_y)
-        plane_dx = abs(candidate["base_link_xyz_m"][0] - plane_x)
-        plane_dz = abs(candidate["base_link_xyz_m"][2] - plane_z)
-        plane_score = math.exp(
-            -0.5 * (plane_dx / max(x_tolerance, 1e-6)) ** 2
-            -0.5 * (plane_dz / max(z_tolerance, 1e-6)) ** 2
-        )
-        row_score = math.exp(
-            -0.5 * (row_error / max(args.row_tolerance_pixels, 1e-6)) ** 2
-        )
-        # 近距离时货架结构可能获得较高平面分，因此提高深度形状证据的权重，
-        # 防止“数量正确但框到货架立柱”的误选继续进入动作模块。
-        appearance_score = max(
-            candidate["template_score"], 0.75 * candidate["depth_shape_score"]
-        )
-        selection_score = (
-            0.55 * appearance_score + 0.25 * plane_score + 0.20 * row_score
-        )
-        candidate.update(
-            {
-                "relative_shelf_offset": (float(u) - anchor_u) / shelf_width,
-                "adaptive_x_tolerance_m": x_tolerance,
-                "adaptive_z_tolerance_m": z_tolerance,
-                "predicted_row_y": predicted_row_y,
-                "row_error_pixels": row_error,
-                "plane_dx_m": plane_dx,
-                "plane_dz_m": plane_dz,
-                "plane_score": plane_score,
-                "row_score": row_score,
-                "appearance_score": appearance_score,
-                "selection_score": selection_score,
-            }
-        )
-        shelf_center = 0.5 * float(roi_x1 + roi_x2)
-        shelf_coordinate = (float(u) - shelf_center) / shelf_width
-        correction_weight, plane_correction = shelf_plane_correction(
-            candidate,
-            plane_x,
-            plane_z,
-            shelf_coordinate,
-            args.plane_correction_base,
-            args.plane_correction_edge_weight,
-            args.plane_correction_uncertainty_weight,
-            args.plane_correction_max,
-        )
-        calibration_offset = interpolate_shelf_offset(
-            calibration_knots, shelf_coordinate
-        )
-        # raw_xyz 是相机和 TF 的直接测量值；corrected_xyz 只用于记录实验修正。
-        # 未显式传入 --use-corrected-output 时，对外仍输出原始坐标，避免过拟合 seed。
-        raw_xyz = np.array(candidate["base_link_xyz_m"], dtype=np.float64)
-        corrected_xyz = raw_xyz + plane_correction + calibration_offset
-        candidate.update(
-            {
-                "shelf_coordinate": shelf_coordinate,
-                "plane_correction_weight": correction_weight,
-                "plane_correction_xyz_m": plane_correction.tolist(),
-                "calibration_offset_xyz_m": calibration_offset.tolist(),
-                "base_link_xyz_raw_m": raw_xyz.tolist(),
-                "base_link_xyz_corrected_m": corrected_xyz.tolist(),
-            }
-        )
-        candidate["base_link_xyz_m"] = (
-            corrected_xyz.tolist()
-            if args.use_corrected_output
-            else raw_xyz.tolist()
-        )
-        source_ok = (
-            candidate["template_score"] >= args.minimum_score
-            or candidate["depth_shape_score"] >= 0.42
-        )
-        candidate["eligible"] = bool(
-            source_ok
-            and plane_dx <= x_tolerance
-            and plane_dz <= z_tolerance
-            and row_error <= args.row_tolerance_pixels
-        )
-        candidate["accepted"] = False
-        if candidate["eligible"]:
-            eligible.append(candidate)
-
-    selected = sorted(
-        eligible, key=lambda item: item["selection_score"], reverse=True
-    )[: args.expected_count]
-    selected_ids = {item["candidate_id"] for item in selected}
-    for candidate in candidates:
-        candidate["accepted"] = candidate["candidate_id"] in selected_ids
-
-    trays = []
-    for order_x, candidate in enumerate(
-        sorted(selected, key=lambda item: item["center_pixel"][0])
-    ):
-        tray = dict(candidate)
-        tray["id"] = "upper_x{}".format(order_x)
-        trays.append(tray)
-
-    candidate_visualization = image.copy()
-    for candidate in sorted(
-        candidates, key=lambda item: item["selection_score"], reverse=True
-    )[:24]:
-        x1, y1, x2, y2 = candidate["bbox"]
+    for rank_by_score, ma…1902 tokens truncated…, y2 = candidate["bbox"]
         color = (0, 255, 0) if candidate["accepted"] else (0, 255, 255)
         thickness = 3 if candidate["accepted"] else 1
         cv2.rectangle(candidate_visualization, (x1, y1), (x2, y2), color, thickness)
@@ -702,7 +518,6 @@ def main():
 
     visualization = image.copy()
     for index, tray in enumerate(trays):
-        # 青色细框：模板识别区域；绿色粗框：RGB-D 完整轮廓；红点：三维投影像素。
         detection_bbox = tray.get("detection_bbox", tray["bbox"])
         if detection_bbox != tray["bbox"]:
             dx1, dy1, dx2, dy2 = detection_bbox
@@ -817,4 +632,3 @@ if __name__ == "__main__":
     except (rospy.ROSException, RuntimeError, ValueError, tf2_ros.TransformException) as error:
         print("ERROR: {}".format(error), file=sys.stderr)
         raise SystemExit(1)
-
