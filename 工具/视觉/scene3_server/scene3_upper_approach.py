@@ -15,6 +15,7 @@ def parse_args():
     parser.add_argument("--desired-shelf-distance", type=float, default=0.90)
     parser.add_argument("--preferred-right-hand-y", type=float, default=-0.28)
     parser.add_argument("--minimum-selection-score", type=float, default=0.60)
+    parser.add_argument("--minimum-depth-shape-score", type=float, default=0.75)
     parser.add_argument("--max-forward-pulse", type=float, default=0.08)
     parser.add_argument("--forward-speed", type=float, default=0.05)
     parser.add_argument("--execute", action="store_true")
@@ -52,6 +53,27 @@ def build_plan(args, data, trays):
             raise ValueError(
                 "tray {} selection score {:.3f} is below {:.3f}".format(
                     tray.get("id", "unknown"), score, args.minimum_selection_score
+                )
+            )
+        depth_shape_score = float(tray.get("depth_shape_score", 0.0))
+        if depth_shape_score < args.minimum_depth_shape_score:
+            raise ValueError(
+                "tray {} depth shape score {:.3f} is below {:.3f}".format(
+                    tray.get("id", "unknown"),
+                    depth_shape_score,
+                    args.minimum_depth_shape_score,
+                )
+            )
+        if tray.get("geometry_source") != "rgbd_vertical":
+            raise ValueError(
+                "tray {} does not have trusted RGB-D object geometry".format(
+                    tray.get("id", "unknown")
+                )
+            )
+        if not tray.get("object_bbox"):
+            raise ValueError(
+                "tray {} does not contain an object bbox".format(
+                    tray.get("id", "unknown")
                 )
             )
 
