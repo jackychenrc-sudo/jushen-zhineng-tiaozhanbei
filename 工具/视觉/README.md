@@ -32,10 +32,43 @@ python3 工具/视觉/save_depth_image.py \
 
 ## 离线检测料盘 2D 候选框
 
+粗检测：
+
 ```bash
 python3 工具/视觉/detect_tray_opencv.py \
   --image vision_debug/scene3_seed3/scene3_head_rgb.jpg \
   --output vision_debug/scene3_seed3/scene3_detected.jpg
+```
+
+更清楚地标注 Scene3 上层/下层候选料盘：
+
+```bash
+python3 工具/视觉/label_smt_trays.py \
+  --image vision_debug/scene3_seed3/scene3_head_rgb.jpg \
+  --output vision_debug/scene3_seed3/scene3_trays_labeled.jpg \
+  --json-output vision_debug/scene3_seed3/scene3_trays_labeled.json \
+  --debug-mask vision_debug/scene3_seed3/scene3_trays_mask.jpg
+```
+
+如果框偏了，先只调这三个参数：
+
+```bash
+python3 工具/视觉/label_smt_trays.py \
+  --image vision_debug/scene3_seed3/scene3_head_rgb.jpg \
+  --output vision_debug/scene3_seed3/scene3_trays_labeled.jpg \
+  --json-output vision_debug/scene3_seed3/scene3_trays_labeled.json \
+  --roi 0.25,0.13,0.75,0.78 \
+  --split-y 0.42 \
+  --dark-threshold 95
+```
+
+输出 JSON 里重点看：
+
+```text
+best.upper.center_pixel
+best.upper.bbox
+best.lower.center_pixel
+best.lower.bbox
 ```
 
 ## 2D + depth 转 3D JSON
