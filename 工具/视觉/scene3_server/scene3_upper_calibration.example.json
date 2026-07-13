@@ -1,0 +1,15 @@
+{
+  "calibrated": false,
+  "hand": "right",
+  "pregrasp_offset_xyz_m": null,
+  "grasp_offset_xyz_m": null,
+  "withdraw_offset_xyz_m": null,
+  "end_effector_rpy_deg": null,
+  "outbound_prepose_xyz_m": null,
+  "outbound_release_xyz_m": null,
+  "outbound_rpy_deg": null,
+  "claw_open_positions": null,
+  "claw_close_positions": null,
+  "claw_velocity": null,
+  "claw_effort": null
+}
