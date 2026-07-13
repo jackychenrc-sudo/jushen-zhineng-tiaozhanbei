@@ -35,6 +35,12 @@ class Scene1ColorVision:
         self.max_area = float(rospy.get_param("~max_area", 8000.0))
         self.black_min_area = float(rospy.get_param("~black_min_area", 8.0))
         self.black_max_area = float(rospy.get_param("~black_max_area", 800.0))
+        self.min_x = float(rospy.get_param("~min_x", 0.15))
+        self.max_x = float(rospy.get_param("~max_x", 0.85))
+        self.min_y = float(rospy.get_param("~min_y", -0.65))
+        self.max_y = float(rospy.get_param("~max_y", 0.25))
+        self.min_z = float(rospy.get_param("~min_z", -0.30))
+        self.max_z = float(rospy.get_param("~max_z", 0.35))
 
         self._lock = threading.Lock()
         self._depth_msg = None
@@ -74,16 +80,15 @@ class Scene1ColorVision:
 
         centers = self._detect_black_mark_centers(color)
         source = "black_marks"
-        if not centers:
+        detections = self._detections_from_centers(
+            centers, depth, camera_info, depth_msg.header.frame_id
+        )
+        if not detections:
             centers = self._detect_parcel_centers(color)
             source = "parcel_blobs"
-
-        detections = []
-        for u, v, area in centers[:self.max_objects]:
-            point = self._pixel_to_robot_point(u, v, depth, camera_info, depth_msg.header.frame_id)
-            if point is None:
-                continue
-            detections.append((u, v, area, point))
+            detections = self._detections_from_centers(
+                centers, depth, camera_info, depth_msg.header.frame_id
+            )
 
         out = PoseArray()
         out.header.stamp = rospy.Time.now()
@@ -108,6 +113,34 @@ class Scene1ColorVision:
                                for p in out.poses],
                 },
             )
+
+    def _detections_from_centers(self, centers, depth, camera_info, camera_frame):
+        detections = []
+        for u, v, area in centers:
+            point = self._pixel_to_robot_point(u, v, depth, camera_info, camera_frame)
+            if point is None:
+                continue
+            if not self._point_in_workspace(point):
+                rospy.logwarn_throttle(
+                    1.0,
+                    "scene1 color vision rejected out-of-range point: %s",
+                    [round(float(value), 3) for value in point],
+                )
+                continue
+            detections.append((u, v, area, point))
+            if len(detections) >= self.max_objects:
+                break
+        return detections
+
+    def _point_in_workspace(self, point):
+        x, y, z = [float(value) for value in point]
+        if not all(math.isfinite(value) for value in (x, y, z)):
+            return False
+        return (
+            self.min_x <= x <= self.max_x and
+            self.min_y <= y <= self.max_y and
+            self.min_z <= z <= self.max_z
+        )
 
     def _decode_color(self, msg):
         data = np.frombuffer(msg.data, dtype=np.uint8)
