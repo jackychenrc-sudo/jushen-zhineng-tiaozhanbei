@@ -68,25 +68,25 @@ SAFE_PREGRASP_DEG = [
 # If the claw misses a parcel, run arm_keyboard_control.py, record its printed
 # pos=[x,y,z], and replace the corresponding point below.
 PICK_POINTS = [
-    [0.42, -0.34, -0.22],
-    [0.42, -0.12, -0.22],
-    [0.55, -0.34, -0.22],
-    [0.55, -0.12, -0.22],
+    [0.42, -0.34, -0.10],
+    [0.42, -0.12, -0.10],
+    [0.55, -0.34, -0.10],
+    [0.55, -0.12, -0.10],
 ]
 
-WEIGH_POINT = [0.34, -0.39, -0.21]
+WEIGH_POINT = [0.34, -0.39, -0.10]
 
 DROP_POINTS = [
-    [0.46, 0.15, -0.17],
-    [0.46, 0.24, -0.17],
-    [0.54, 0.15, -0.17],
-    [0.54, 0.24, -0.17],
+    [0.46, 0.15, -0.10],
+    [0.46, 0.24, -0.10],
+    [0.54, 0.15, -0.10],
+    [0.54, 0.24, -0.10],
 ]
 
 # YOLO/vision output is expected to be in robot base/local coordinates.
 # If the detected point is the parcel center, these offsets move the target
 # slightly to a better claw contact point. Tune them after seeing logs.
-VISUAL_PICK_OFFSET = [0.0, 0.0, -0.40]
+VISUAL_PICK_OFFSET = [0.0, 0.0, -0.02]
 VISUAL_WAIT_TIMEOUT = 10.0
 VISUAL_RETRY_COUNT = 3
 PICK_WORKSPACE = {
