@@ -85,15 +85,16 @@ DROP_POINTS = [
 
 # During debugging, never descend directly to the table. First verify that the
 # claw hovers above the parcel. Only then run with --execute-grasp.
-SAFE_APPROACH_Z = 0.28
-PICK_DESCEND_Z = 0.10
-WEIGH_DESCEND_Z = 0.10
-DROP_DESCEND_Z = 0.14
+SAFE_TRAVEL_Z = 0.55
+SAFE_APPROACH_Z = 0.42
+PICK_DESCEND_Z = 0.16
+WEIGH_DESCEND_Z = 0.16
+DROP_DESCEND_Z = 0.20
 
 # YOLO/vision output is expected to be in robot base/local coordinates.
-# If the detected point is the parcel center, these offsets move the target
-# slightly to a better claw contact point. Tune them after seeing logs.
-VISUAL_PICK_OFFSET = [0.0, 0.0, -0.02]
+# Vision now publishes the parcel tape-cross center on the top face. Keep the
+# target slightly above that surface so the gripper does not start inside the box.
+VISUAL_PICK_OFFSET = [0.0, 0.0, 0.03]
 VISUAL_TOPIC_CANDIDATES = [
     "/robot_yolov8_info",
     "/object_yolo_box_tf2_torso_result",
@@ -122,6 +123,10 @@ def build_ik_param():
 
 def above(point, dz):
     return [float(point[0]), float(point[1]), float(point[2]) + float(dz)]
+
+
+def travel_above(point):
+    return above(point, SAFE_TRAVEL_Z)
 
 
 class BasicActions:
@@ -411,6 +416,7 @@ class VisionParcelLocator:
 def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point, execute_grasp=False):
     actions.rospy.loginfo("pick parcel at %s", pick_point)
     actions.open_right_claw()
+    actions.move_right_hand(travel_above(pick_point), duration=2.0)
     actions.move_right_hand(above(pick_point, SAFE_APPROACH_Z), duration=2.0)
 
     if not execute_grasp:
@@ -422,18 +428,23 @@ def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point, execute_gr
     actions.move_right_hand(above(pick_point, PICK_DESCEND_Z), duration=1.8)
     actions.close_right_claw()
     actions.move_right_hand(above(pick_point, SAFE_APPROACH_Z), duration=1.8)
+    actions.move_right_hand(travel_above(pick_point), duration=1.5)
 
     actions.rospy.loginfo("weigh parcel at %s", weigh_point)
+    actions.move_right_hand(travel_above(weigh_point), duration=2.0)
     actions.move_right_hand(above(weigh_point, SAFE_APPROACH_Z), duration=2.0)
     actions.move_right_hand(above(weigh_point, WEIGH_DESCEND_Z), duration=1.8)
     actions.rospy.sleep(1.0)
     actions.move_right_hand(above(weigh_point, SAFE_APPROACH_Z), duration=1.8)
+    actions.move_right_hand(travel_above(weigh_point), duration=1.5)
 
     actions.rospy.loginfo("drop parcel at %s", drop_point)
+    actions.move_right_hand(travel_above(drop_point), duration=2.0)
     actions.move_right_hand(above(drop_point, SAFE_APPROACH_Z), duration=2.0)
     actions.move_right_hand(above(drop_point, DROP_DESCEND_Z), duration=1.8)
     actions.open_right_claw()
     actions.move_right_hand(above(drop_point, SAFE_APPROACH_Z), duration=1.8)
+    actions.move_right_hand(travel_above(drop_point), duration=1.5)
 
 
 def run_scene1(actions, execute_grasp=False, max_parcels=4):
