@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """Simple color + depth parcel detector for challenge scene1.
 
-This node does not train a neural network. It first tries to detect the yellow
-cross-shaped tape on top of each parcel. The right claw should hover above the
-cross center. If tape crosses are not found, it falls back to detecting
+This node does not train a neural network. It first tries to detect the
+yellow tape cross on the top of each parcel. The claw should hover above the
+cross center. If cross marks are not found, it falls back to detecting
 non-green parcel blobs on the green table.
 """
 
@@ -33,8 +33,8 @@ class Scene1ColorVision:
         self.max_objects = int(rospy.get_param("~max_objects", 4))
         self.min_area = float(rospy.get_param("~min_area", 80.0))
         self.max_area = float(rospy.get_param("~max_area", 8000.0))
-        self.tape_min_area = float(rospy.get_param("~tape_min_area", 45.0))
-        self.tape_max_area = float(rospy.get_param("~tape_max_area", 4500.0))
+        self.cross_min_area = float(rospy.get_param("~cross_min_area", 18.0))
+        self.cross_max_area = float(rospy.get_param("~cross_max_area", 2500.0))
         self.min_x = float(rospy.get_param("~min_x", 0.15))
         self.max_x = float(rospy.get_param("~max_x", 0.85))
         self.min_y = float(rospy.get_param("~min_y", -0.65))
@@ -79,7 +79,7 @@ class Scene1ColorVision:
             return
 
         centers = self._detect_tape_cross_centers(color)
-        source = "tape_crosses"
+        source = "tape_cross"
         detections = self._detections_from_centers(
             centers, depth, camera_info, depth_msg.header.frame_id
         )
@@ -174,28 +174,26 @@ class Scene1ColorVision:
     def _detect_tape_cross_centers(self, bgr):
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
-        # The parcel tops have a yellow/cream cross tape. It is much larger and
-        # more stable than the small black label mark, so use it as the grasp
-        # reference. Two masks are combined to cover both saturated yellow tape
-        # and pale tape under simulator lighting.
-        yellow = cv2.inRange(hsv, np.array([12, 35, 95]), np.array([48, 255, 255]))
-        pale_yellow = cv2.inRange(hsv, np.array([15, 10, 135]), np.array([45, 130, 255]))
-        mask = cv2.bitwise_or(yellow, pale_yellow)
+        # Parcel tape is warm yellow/orange. Keep the threshold wide enough for
+        # lighting changes, then use geometry to reject full parcel blobs.
+        warm_tape = cv2.inRange(hsv, np.array([10, 35, 95]), np.array([48, 230, 255]))
+        green_table = cv2.inRange(hsv, np.array([35, 30, 25]), np.array([100, 255, 255]))
+        mask = cv2.bitwise_and(warm_tape, cv2.bitwise_not(green_table))
 
         height, width = mask.shape[:2]
         roi = np.zeros_like(mask)
-        roi[int(height * 0.12):int(height * 0.88), int(width * 0.08):int(width * 0.95)] = 255
+        roi[int(height * 0.12):int(height * 0.90), int(width * 0.08):int(width * 0.95)] = 255
         mask = cv2.bitwise_and(mask, roi)
 
-        kernel = np.ones((5, 5), np.uint8)
+        kernel = np.ones((3, 3), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         candidates = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < self.tape_min_area or area > self.tape_max_area:
+            if area < self.cross_min_area or area > self.cross_max_area:
                 continue
 
             x, y, w, h = cv2.boundingRect(contour)
@@ -205,10 +203,12 @@ class Scene1ColorVision:
             if aspect < 0.20 or aspect > 5.0:
                 continue
 
+            # A cross is two thin bars: it is compact, but does not fill its
+            # bounding box like a rectangle. Full yellow parcels are rejected
+            # here and handled by the parcel-blob fallback.
             rect_area = float(w * h)
             fill_ratio = area / rect_area if rect_area > 0 else 0.0
-            # A cross is neither a tiny speck nor a full filled rectangle.
-            if fill_ratio < 0.12 or fill_ratio > 0.92:
+            if fill_ratio < 0.08 or fill_ratio > 0.72:
                 continue
 
             moments = cv2.moments(contour)
@@ -222,7 +222,7 @@ class Scene1ColorVision:
         merged = []
         for candidate in sorted(candidates, key=lambda item: item[2], reverse=True):
             u, v, area = candidate
-            if any((u - old_u) ** 2 + (v - old_v) ** 2 < 28 ** 2 for old_u, old_v, _ in merged):
+            if any((u - old_u) ** 2 + (v - old_v) ** 2 < 18 ** 2 for old_u, old_v, _ in merged):
                 continue
             merged.append(candidate)
 
