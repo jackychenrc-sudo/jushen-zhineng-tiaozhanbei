@@ -17,12 +17,13 @@ def parse_args():
     parser.add_argument("--max-forward-pulse", type=float, default=0.08)
     parser.add_argument("--forward-speed", type=float, default=0.05)
     parser.add_argument("--execute", action="store_true")
+    parser.add_argument("--allow-single-frame", action="store_true")
     parser.add_argument("--confirmation", default="")
     parser.add_argument("--cmd-vel-topic", default="/cmd_vel")
     return parser.parse_args()
 
 
-def load_detection(path):
+def load_detection(path, allow_single_frame=False):
     detection_path = Path(path)
     if not detection_path.is_file():
         raise ValueError("detection JSON does not exist: {}".format(path))
@@ -34,6 +35,16 @@ def load_detection(path):
                 data.get("status"), len(trays)
             )
         )
+    if not allow_single_frame:
+        temporal = data.get("temporal_validation", {})
+        if (
+            data.get("algorithm") != "scene3_temporal_consensus_v1"
+            or not temporal.get("passed")
+        ):
+            raise ValueError(
+                "movement requires scene3_temporal_consensus_v1; "
+                "use --allow-single-frame only for a dry-run diagnostic"
+            )
     return data, trays
 
 
@@ -177,8 +188,10 @@ def main():
         raise ValueError("max forward pulse must be within [0.01, 0.08] m")
     if not 0.02 <= args.forward_speed <= 0.06:
         raise ValueError("forward speed must be within [0.02, 0.06] m/s")
+    if args.execute and args.allow_single_frame:
+        raise ValueError("single-frame mode cannot execute robot motion")
 
-    data, trays = load_detection(args.detection_json)
+    data, trays = load_detection(args.detection_json, args.allow_single_frame)
     plan = build_plan(args, data, trays)
     if args.execute:
         execute_forward_pulse(args, plan)
@@ -191,4 +204,3 @@ if __name__ == "__main__":
     except (RuntimeError, ValueError) as error:
         print("ERROR: {}".format(error), file=sys.stderr)
         raise SystemExit(1)
-
