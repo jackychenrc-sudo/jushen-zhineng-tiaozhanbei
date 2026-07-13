@@ -85,21 +85,24 @@ DROP_POINTS = [
 
 # During debugging, never descend directly to the table. First verify that the
 # claw hovers above the parcel. Only then run with --execute-grasp.
-SAFE_TRAVEL_Z = 0.55
-SAFE_APPROACH_Z = 0.42
-PICK_DESCEND_Z = 0.16
-WEIGH_DESCEND_Z = 0.16
-DROP_DESCEND_Z = 0.20
+SAFE_APPROACH_Z = 0.28
+PICK_DESCEND_Z = 0.10
+WEIGH_DESCEND_Z = 0.10
+DROP_DESCEND_Z = 0.14
 
 # YOLO/vision output is expected to be in robot base/local coordinates.
-# Vision now publishes the parcel tape-cross center on the top face. Keep the
-# target slightly above that surface so the gripper does not start inside the box.
-VISUAL_PICK_OFFSET = [0.0, 0.0, 0.03]
+# If the detected point is the parcel center, these offsets move the target
+# slightly to a better claw contact point. Tune them after seeing logs.
+VISUAL_PICK_OFFSET = [0.0, 0.0, -0.02]
 VISUAL_TOPIC_CANDIDATES = [
     "/robot_yolov8_info",
     "/object_yolo_box_tf2_torso_result",
 ]
 POSE_ARRAY_TOPIC = "/scene1/parcel_points"
+HEAD_COLOR_TOPIC = "/cam_h/color/image_raw/compressed"
+HEAD_CAMERA_INFO_TOPIC = "/cam_h/color/camera_info"
+WEIGH_COLOR_CHANGE_TIMEOUT = 8.0
+WEIGH_COLOR_CHANGE_THRESHOLD = 35.0
 
 
 def rad_to_deg(values):
@@ -123,10 +126,6 @@ def build_ik_param():
 
 def above(point, dz):
     return [float(point[0]), float(point[1]), float(point[2]) + float(dz)]
-
-
-def travel_above(point):
-    return above(point, SAFE_TRAVEL_Z)
 
 
 class BasicActions:
@@ -413,10 +412,147 @@ class VisionParcelLocator:
         return sorted(points, key=lambda p: (p[0], p[1]))
 
 
-def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point, execute_grasp=False):
+class HeadCameraColorWatcher:
+    """Sample the head-camera color at a known robot-frame point."""
+
+    def __init__(self, rospy):
+        self.rospy = rospy
+        self.available = False
+        try:
+            import cv2
+            import numpy as np
+            import tf2_ros
+            from sensor_msgs.msg import CameraInfo
+            from sensor_msgs.msg import CompressedImage
+        except Exception as exc:
+            rospy.logwarn("head color watcher unavailable: %s", exc)
+            return
+
+        self.cv2 = cv2
+        self.np = np
+        self.CameraInfo = CameraInfo
+        self.CompressedImage = CompressedImage
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
+        self.available = True
+
+    def wait_for_color_change(self, robot_point, timeout=WEIGH_COLOR_CHANGE_TIMEOUT,
+                              threshold=WEIGH_COLOR_CHANGE_THRESHOLD):
+        if not self.available:
+            self.rospy.sleep(1.2)
+            return False
+
+        baseline = self._sample_bgr(robot_point)
+        if baseline is None:
+            self.rospy.logwarn("weigh color baseline unavailable; use fixed wait")
+            self.rospy.sleep(1.2)
+            return False
+
+        deadline = time.time() + float(timeout)
+        rate = self.rospy.Rate(4)
+        while time.time() < deadline and not self.rospy.is_shutdown():
+            current = self._sample_bgr(robot_point)
+            if current is not None:
+                diff = float(self.np.linalg.norm(current - baseline))
+                if diff >= float(threshold):
+                    self.rospy.loginfo("weigh color changed, diff=%.1f", diff)
+                    return True
+            rate.sleep()
+
+        self.rospy.logwarn("weigh color change timeout; continue with pickup")
+        return False
+
+    def _sample_bgr(self, robot_point, patch_radius=8):
+        try:
+            image_msg = self.rospy.wait_for_message(
+                HEAD_COLOR_TOPIC, self.CompressedImage, timeout=1.0
+            )
+            camera_info = self.rospy.wait_for_message(
+                HEAD_CAMERA_INFO_TOPIC, self.CameraInfo, timeout=1.0
+            )
+        except Exception:
+            return None
+
+        image = self._decode_color(image_msg)
+        if image is None:
+            return None
+
+        camera_frame = image_msg.header.frame_id or camera_info.header.frame_id
+        pixel = self._robot_point_to_pixel(robot_point, camera_frame, camera_info)
+        if pixel is None:
+            return None
+
+        u, v = pixel
+        height, width = image.shape[:2]
+        if u < 0 or u >= width or v < 0 or v >= height:
+            return None
+
+        x0 = max(0, u - patch_radius)
+        x1 = min(width, u + patch_radius + 1)
+        y0 = max(0, v - patch_radius)
+        y1 = min(height, v + patch_radius + 1)
+        patch = image[y0:y1, x0:x1]
+        if patch.size == 0:
+            return None
+        return self.np.median(patch.reshape(-1, 3), axis=0).astype(self.np.float32)
+
+    def _decode_color(self, msg):
+        data = self.np.frombuffer(msg.data, dtype=self.np.uint8)
+        return self.cv2.imdecode(data, self.cv2.IMREAD_COLOR)
+
+    def _robot_point_to_pixel(self, robot_point, camera_frame, camera_info):
+        try:
+            transform = self.tf_buffer.lookup_transform(
+                camera_frame,
+                "base_link",
+                self.rospy.Time(0),
+                self.rospy.Duration(0.2),
+            )
+        except Exception as exc:
+            self.rospy.logwarn_throttle(1.0, "weigh color tf failed: %s", exc)
+            return None
+
+        point = self._transform_xyz(robot_point, transform)
+        if point is None or point[2] <= 0.05:
+            return None
+
+        fx = camera_info.K[0]
+        fy = camera_info.K[4]
+        cx = camera_info.K[2]
+        cy = camera_info.K[5]
+        if fx == 0.0 or fy == 0.0:
+            return None
+
+        u = int(round(fx * point[0] / point[2] + cx))
+        v = int(round(fy * point[1] / point[2] + cy))
+        return u, v
+
+    def _transform_xyz(self, point, transform):
+        q = transform.transform.rotation
+        t = transform.transform.translation
+        x, y, z = self._rotate_vector(
+            [float(point[0]), float(point[1]), float(point[2])],
+            [q.x, q.y, q.z, q.w],
+        )
+        return [x + t.x, y + t.y, z + t.z]
+
+    def _rotate_vector(self, vector, quat_xyzw):
+        x, y, z = vector
+        qx, qy, qz, qw = quat_xyzw
+        tx = 2.0 * (qy * z - qz * y)
+        ty = 2.0 * (qz * x - qx * z)
+        tz = 2.0 * (qx * y - qy * x)
+        rx = x + qw * tx + (qy * tz - qz * ty)
+        ry = y + qw * ty + (qz * tx - qx * tz)
+        rz = z + qw * tz + (qx * ty - qy * tx)
+        return rx, ry, rz
+
+
+def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point,
+                        execute_grasp=False, color_watcher=None,
+                        wait_for_weigh_color=True):
     actions.rospy.loginfo("pick parcel at %s", pick_point)
     actions.open_right_claw()
-    actions.move_right_hand(travel_above(pick_point), duration=2.0)
     actions.move_right_hand(above(pick_point, SAFE_APPROACH_Z), duration=2.0)
 
     if not execute_grasp:
@@ -428,26 +564,32 @@ def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point, execute_gr
     actions.move_right_hand(above(pick_point, PICK_DESCEND_Z), duration=1.8)
     actions.close_right_claw()
     actions.move_right_hand(above(pick_point, SAFE_APPROACH_Z), duration=1.8)
-    actions.move_right_hand(travel_above(pick_point), duration=1.5)
 
-    actions.rospy.loginfo("weigh parcel at %s", weigh_point)
-    actions.move_right_hand(travel_above(weigh_point), duration=2.0)
+    actions.rospy.loginfo("place parcel on weighing area at %s", weigh_point)
     actions.move_right_hand(above(weigh_point, SAFE_APPROACH_Z), duration=2.0)
     actions.move_right_hand(above(weigh_point, WEIGH_DESCEND_Z), duration=1.8)
-    actions.rospy.sleep(1.0)
+    actions.open_right_claw()
+    actions.move_right_hand(above(weigh_point, SAFE_APPROACH_Z), duration=1.5)
+
+    if wait_for_weigh_color and color_watcher is not None:
+        color_watcher.wait_for_color_change(above(weigh_point, WEIGH_DESCEND_Z))
+    else:
+        actions.rospy.sleep(1.2)
+
+    actions.rospy.loginfo("pick weighed parcel back from weighing area")
+    actions.move_right_hand(above(weigh_point, SAFE_APPROACH_Z), duration=1.2)
+    actions.move_right_hand(above(weigh_point, WEIGH_DESCEND_Z), duration=1.8)
+    actions.close_right_claw()
     actions.move_right_hand(above(weigh_point, SAFE_APPROACH_Z), duration=1.8)
-    actions.move_right_hand(travel_above(weigh_point), duration=1.5)
 
     actions.rospy.loginfo("drop parcel at %s", drop_point)
-    actions.move_right_hand(travel_above(drop_point), duration=2.0)
     actions.move_right_hand(above(drop_point, SAFE_APPROACH_Z), duration=2.0)
     actions.move_right_hand(above(drop_point, DROP_DESCEND_Z), duration=1.8)
     actions.open_right_claw()
     actions.move_right_hand(above(drop_point, SAFE_APPROACH_Z), duration=1.8)
-    actions.move_right_hand(travel_above(drop_point), duration=1.5)
 
 
-def run_scene1(actions, execute_grasp=False, max_parcels=4):
+def run_scene1(actions, execute_grasp=False, max_parcels=4, wait_for_weigh_color=True):
     actions.rospy.loginfo("scene1: start parcel weighing and placing")
     actions.wait_for_arm_subscriber()
     actions.look_down()
@@ -455,6 +597,7 @@ def run_scene1(actions, execute_grasp=False, max_parcels=4):
 
     actions.move_arm_degrees(SAFE_PREGRASP_DEG, duration=2.0)
     actions.open_right_claw()
+    color_watcher = HeadCameraColorWatcher(actions.rospy)
 
     visual_points = VisionParcelLocator(actions.rospy).detect_pick_points(max_count=4)
     pick_points = visual_points if visual_points else PICK_POINTS
@@ -468,6 +611,8 @@ def run_scene1(actions, execute_grasp=False, max_parcels=4):
             WEIGH_POINT,
             DROP_POINTS[index],
             execute_grasp=execute_grasp,
+            color_watcher=color_watcher,
+            wait_for_weigh_color=wait_for_weigh_color,
         )
         if not execute_grasp:
             break
@@ -486,9 +631,15 @@ def run_scene3(actions):
     actions.rospy.logwarn("scene3 is not implemented in this file")
 
 
-def execute_task(scene, actions, execute_grasp=False, max_parcels=4):
+def execute_task(scene, actions, execute_grasp=False, max_parcels=4,
+                 wait_for_weigh_color=True):
     if scene == "scene1":
-        run_scene1(actions, execute_grasp=execute_grasp, max_parcels=max_parcels)
+        run_scene1(
+            actions,
+            execute_grasp=execute_grasp,
+            max_parcels=max_parcels,
+            wait_for_weigh_color=wait_for_weigh_color,
+        )
     elif scene == "scene2":
         run_scene2(actions)
     elif scene == "scene3":
@@ -514,7 +665,8 @@ def load_launcher():
 
 
 def run_scene(scene, seed, node_name=None, timeout=120, time_limit=None,
-              timer_gui=True, execute_grasp=False, max_parcels=4):
+              timer_gui=True, execute_grasp=False, max_parcels=4,
+              scene1_vision=True, wait_for_weigh_color=True):
     if scene not in SCENE_CONFIGS:
         raise ValueError("unknown scene: {}".format(scene))
 
@@ -537,8 +689,23 @@ def run_scene(scene, seed, node_name=None, timeout=120, time_limit=None,
     arm_pub = rospy.Publisher("/kuavo_arm_traj", JointState, queue_size=10)
     rospy.sleep(1.0)
 
+    if scene == "scene1" and scene1_vision:
+        try:
+            from scene1_color_vision import Scene1ColorVision
+            Scene1ColorVision()
+            rospy.loginfo("scene1 tape-cross vision started in task node")
+            rospy.sleep(1.0)
+        except Exception as exc:
+            rospy.logwarn("scene1 vision failed to start; fallback to fixed points: %s", exc)
+
     actions = BasicActions(rospy, arm_pub)
-    execute_task(scene, actions, execute_grasp=execute_grasp, max_parcels=max_parcels)
+    execute_task(
+        scene,
+        actions,
+        execute_grasp=execute_grasp,
+        max_parcels=max_parcels,
+        wait_for_weigh_color=wait_for_weigh_color,
+    )
 
     rospy.loginfo("task script finished; keep node alive for timer/checking")
     rospy.spin()
@@ -558,6 +725,8 @@ def main():
         help="actually descend, close claw, weigh, and drop. Without this, only hover above the first parcel.",
     )
     parser.add_argument("--max-parcels", type=int, default=4)
+    parser.add_argument("--no-scene1-vision", action="store_true")
+    parser.add_argument("--no-wait-weigh-color", action="store_true")
     args = parser.parse_args()
 
     run_scene(
@@ -569,6 +738,8 @@ def main():
         timer_gui=not args.no_timer_gui,
         execute_grasp=args.execute_grasp,
         max_parcels=args.max_parcels,
+        scene1_vision=not args.no_scene1_vision,
+        wait_for_weigh_color=not args.no_wait_weigh_color,
     )
 
 
