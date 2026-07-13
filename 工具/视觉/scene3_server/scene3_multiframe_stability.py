@@ -72,6 +72,12 @@ def valid_bbox(tray, key):
 def validate_frame(data, frame_index, args):
     errors = []
     trays = data.get("upper_trays", [])
+    if data.get("algorithm") != "multiscale_rgbd_object_geometry_v5":
+        errors.append("frame {} is not a V5 object-geometry result".format(frame_index))
+    if not data.get("source_frame"):
+        errors.append("frame {} lacks a source camera frame".format(frame_index))
+    if data.get("target_frame") != "base_link":
+        errors.append("frame {} target frame is not base_link".format(frame_index))
     if data.get("status") != "ok":
         errors.append("frame {} status is {}".format(frame_index, data.get("status")))
     if len(trays) != args.expected_count:
@@ -88,13 +94,22 @@ def validate_frame(data, frame_index, args):
             errors.append("{} lacks a valid object_bbox".format(label))
         if tray.get("accepted") is False:
             errors.append("{} is not an accepted V5 detection".format(label))
-        if float(tray.get("selection_score", 0.0)) < args.minimum_selection_score:
-            errors.append("{} selection score is too low".format(label))
-        if (
-            float(tray.get("depth_shape_score", 0.0))
-            < args.minimum_depth_shape_score
-        ):
-            errors.append("{} depth shape score is too low".format(label))
+        try:
+            selection_score = float(tray.get("selection_score", 0.0))
+            if not math.isfinite(selection_score):
+                raise ValueError
+            if selection_score < args.minimum_selection_score:
+                errors.append("{} selection score is too low".format(label))
+        except (TypeError, ValueError):
+            errors.append("{} selection score is invalid".format(label))
+        try:
+            depth_shape_score = float(tray.get("depth_shape_score", 0.0))
+            if not math.isfinite(depth_shape_score):
+                raise ValueError
+            if depth_shape_score < args.minimum_depth_shape_score:
+                errors.append("{} depth shape score is too low".format(label))
+        except (TypeError, ValueError):
+            errors.append("{} depth shape score is invalid".format(label))
         try:
             raw_xyz(tray)
             center_pixel(tray)
