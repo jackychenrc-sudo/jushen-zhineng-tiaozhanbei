@@ -45,6 +45,12 @@ def load_detection(path, allow_single_frame=False):
                 "movement requires scene3_temporal_consensus_v1; "
                 "use --allow-single-frame only for a dry-run diagnostic"
             )
+        if data.get("target_frame") != "base_link":
+            raise ValueError("temporal detection target frame must be base_link")
+        if any(
+            not tray.get("temporal_metrics", {}).get("stable") for tray in trays
+        ):
+            raise ValueError("every tray track must be temporally stable")
     return data, trays
 
 
