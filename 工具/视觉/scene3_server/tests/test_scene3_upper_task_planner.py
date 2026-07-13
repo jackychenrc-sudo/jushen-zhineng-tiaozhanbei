@@ -40,6 +40,7 @@ def stable_detection(distance):
                 "base_link_xyz_m": [distance + index * 0.002, lateral_y, 0.27],
                 "selection_score": 0.80 + index * 0.01,
                 "depth_shape_score": 0.90,
+                "temporal_metrics": {"stable": True, "frame_count": 3},
             }
         )
     return {
