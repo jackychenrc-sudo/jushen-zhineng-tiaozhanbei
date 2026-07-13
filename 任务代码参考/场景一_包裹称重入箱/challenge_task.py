@@ -68,32 +68,32 @@ SAFE_PREGRASP_DEG = [
 # If the claw misses a parcel, run arm_keyboard_control.py, record its printed
 # pos=[x,y,z], and replace the corresponding point below.
 PICK_POINTS = [
-    [0.42, -0.34, -0.10],
-    [0.42, -0.12, -0.10],
-    [0.55, -0.34, -0.10],
-    [0.55, -0.12, -0.10],
+    [0.42, -0.34, -0.22],
+    [0.42, -0.12, -0.22],
+    [0.55, -0.34, -0.22],
+    [0.55, -0.12, -0.22],
 ]
 
-WEIGH_POINT = [0.34, -0.39, -0.10]
+WEIGH_POINT = [0.34, -0.39, -0.21]
 
 DROP_POINTS = [
-    [0.46, 0.15, -0.10],
-    [0.46, 0.24, -0.10],
-    [0.54, 0.15, -0.10],
-    [0.54, 0.24, -0.10],
+    [0.46, 0.15, -0.17],
+    [0.46, 0.24, -0.17],
+    [0.54, 0.15, -0.17],
+    [0.54, 0.24, -0.17],
 ]
+
+# During debugging, never descend directly to the table. First verify that the
+# claw hovers above the parcel. Only then run with --execute-grasp.
+SAFE_APPROACH_Z = 0.28
+PICK_DESCEND_Z = 0.10
+WEIGH_DESCEND_Z = 0.10
+DROP_DESCEND_Z = 0.14
 
 # YOLO/vision output is expected to be in robot base/local coordinates.
 # If the detected point is the parcel center, these offsets move the target
 # slightly to a better claw contact point. Tune them after seeing logs.
 VISUAL_PICK_OFFSET = [0.0, 0.0, -0.02]
-VISUAL_WAIT_TIMEOUT = 10.0
-VISUAL_RETRY_COUNT = 3
-PICK_WORKSPACE = {
-    "x": (0.25, 0.75),
-    "y": (-0.60, 0.05),
-    "z": (-0.35, 0.25),
-}
 VISUAL_TOPIC_CANDIDATES = [
     "/robot_yolov8_info",
     "/object_yolo_box_tf2_torso_result",
@@ -323,16 +323,10 @@ class VisionParcelLocator:
     def __init__(self, rospy):
         self.rospy = rospy
 
-    def detect_pick_points(self, max_count=4, timeout=VISUAL_WAIT_TIMEOUT):
-        for attempt in range(1, VISUAL_RETRY_COUNT + 1):
-            pose_points = self._detect_pose_array(max_count=max_count, timeout=timeout)
-            if pose_points:
-                return pose_points
-            self.rospy.logwarn(
-                "no /scene1/parcel_points yet, retry vision %d/%d",
-                attempt,
-                VISUAL_RETRY_COUNT,
-            )
+    def detect_pick_points(self, max_count=4, timeout=3.0):
+        pose_points = self._detect_pose_array(max_count=max_count, timeout=timeout)
+        if pose_points:
+            return pose_points
 
         try:
             from vision_msgs.msg import Detection2DArray
@@ -355,8 +349,7 @@ class VisionParcelLocator:
             self.rospy.logwarn("no visual parcel detections; fallback to fixed PICK_POINTS")
             return []
 
-        points = self._filter_pick_workspace(detections)
-        points = self._sort_table_points(points)[:max_count]
+        points = self._sort_table_points(detections)[:max_count]
         adjusted = [
             [
                 p[0] + VISUAL_PICK_OFFSET[0],
@@ -383,7 +376,6 @@ class VisionParcelLocator:
             for p in msg.poses
             if all(math.isfinite(v) for v in [p.position.x, p.position.y, p.position.z])
         ]
-        points = self._filter_pick_workspace(points)
         points = self._sort_table_points(points)[:max_count]
         adjusted = [
             [
@@ -411,70 +403,40 @@ class VisionParcelLocator:
                 points.append(point)
         return points
 
-    def _filter_pick_workspace(self, points):
-        kept = []
-        for point in points:
-            if self._is_pick_point(point):
-                kept.append(point)
-            else:
-                self.rospy.loginfo(
-                    "reject vision point outside pick workspace: %s",
-                    [round(float(v), 3) for v in point],
-                )
-        return kept
-
-    def _is_pick_point(self, point):
-        return (
-            PICK_WORKSPACE["x"][0] <= point[0] <= PICK_WORKSPACE["x"][1]
-            and PICK_WORKSPACE["y"][0] <= point[1] <= PICK_WORKSPACE["y"][1]
-            and PICK_WORKSPACE["z"][0] <= point[2] <= PICK_WORKSPACE["z"][1]
-        )
-
     def _sort_table_points(self, points):
         # Stable order for a 2x2 layout: first by x, then by y.
         return sorted(points, key=lambda p: (p[0], p[1]))
 
 
-def start_local_scene1_vision(rospy):
-    """Run the simple color/depth detector in this process if the file exists."""
-    try:
-        from scene1_color_vision import Scene1ColorVision
-    except Exception as exc:
-        rospy.logwarn("local scene1_color_vision unavailable: %s", exc)
-        return None
-
-    try:
-        vision = Scene1ColorVision()
-        rospy.sleep(1.0)
-        rospy.loginfo("local scene1_color_vision started")
-        return vision
-    except Exception as exc:
-        rospy.logwarn("failed to start local scene1_color_vision: %s", exc)
-        return None
-
-
-def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point):
+def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point, execute_grasp=False):
     actions.rospy.loginfo("pick parcel at %s", pick_point)
     actions.open_right_claw()
-    actions.move_right_hand(above(pick_point, 0.12), duration=2.0)
-    actions.move_right_hand(pick_point, duration=1.4)
+    actions.move_right_hand(above(pick_point, SAFE_APPROACH_Z), duration=2.0)
+
+    if not execute_grasp:
+        actions.rospy.logwarn(
+            "debug mode: stopped above parcel. If the claw is safely above the parcel, rerun with --execute-grasp"
+        )
+        return
+
+    actions.move_right_hand(above(pick_point, PICK_DESCEND_Z), duration=1.8)
     actions.close_right_claw()
-    actions.move_right_hand(above(pick_point, 0.18), duration=1.5)
+    actions.move_right_hand(above(pick_point, SAFE_APPROACH_Z), duration=1.8)
 
     actions.rospy.loginfo("weigh parcel at %s", weigh_point)
-    actions.move_right_hand(above(weigh_point, 0.16), duration=2.0)
-    actions.move_right_hand(above(weigh_point, 0.03), duration=1.4)
+    actions.move_right_hand(above(weigh_point, SAFE_APPROACH_Z), duration=2.0)
+    actions.move_right_hand(above(weigh_point, WEIGH_DESCEND_Z), duration=1.8)
     actions.rospy.sleep(1.0)
-    actions.move_right_hand(above(weigh_point, 0.16), duration=1.4)
+    actions.move_right_hand(above(weigh_point, SAFE_APPROACH_Z), duration=1.8)
 
     actions.rospy.loginfo("drop parcel at %s", drop_point)
-    actions.move_right_hand(above(drop_point, 0.20), duration=2.0)
-    actions.move_right_hand(above(drop_point, 0.08), duration=1.4)
+    actions.move_right_hand(above(drop_point, SAFE_APPROACH_Z), duration=2.0)
+    actions.move_right_hand(above(drop_point, DROP_DESCEND_Z), duration=1.8)
     actions.open_right_claw()
-    actions.move_right_hand(above(drop_point, 0.20), duration=1.4)
+    actions.move_right_hand(above(drop_point, SAFE_APPROACH_Z), duration=1.8)
 
 
-def run_scene1(actions, max_parcels=4):
+def run_scene1(actions, execute_grasp=False, max_parcels=4):
     actions.rospy.loginfo("scene1: start parcel weighing and placing")
     actions.wait_for_arm_subscriber()
     actions.look_down()
@@ -483,16 +445,21 @@ def run_scene1(actions, max_parcels=4):
     actions.move_arm_degrees(SAFE_PREGRASP_DEG, duration=2.0)
     actions.open_right_claw()
 
-    vision_node = start_local_scene1_vision(actions.rospy)
     visual_points = VisionParcelLocator(actions.rospy).detect_pick_points(max_count=4)
     pick_points = visual_points if visual_points else PICK_POINTS
-    if vision_node is None and not visual_points:
-        actions.rospy.logwarn("vision unavailable; using fixed fallback PICK_POINTS")
 
     for index, pick_point in enumerate(pick_points[:max_parcels]):
         if actions.rospy.is_shutdown():
             break
-        pick_weigh_drop_one(actions, pick_point, WEIGH_POINT, DROP_POINTS[index])
+        pick_weigh_drop_one(
+            actions,
+            pick_point,
+            WEIGH_POINT,
+            DROP_POINTS[index],
+            execute_grasp=execute_grasp,
+        )
+        if not execute_grasp:
+            break
 
     actions.move_arm_degrees(SAFE_PREGRASP_DEG, duration=2.0)
     actions.open_right_claw()
@@ -508,9 +475,9 @@ def run_scene3(actions):
     actions.rospy.logwarn("scene3 is not implemented in this file")
 
 
-def execute_task(scene, actions, max_parcels=4):
+def execute_task(scene, actions, execute_grasp=False, max_parcels=4):
     if scene == "scene1":
-        run_scene1(actions, max_parcels=max_parcels)
+        run_scene1(actions, execute_grasp=execute_grasp, max_parcels=max_parcels)
     elif scene == "scene2":
         run_scene2(actions)
     elif scene == "scene3":
@@ -536,7 +503,7 @@ def load_launcher():
 
 
 def run_scene(scene, seed, node_name=None, timeout=120, time_limit=None,
-              timer_gui=True, max_parcels=4):
+              timer_gui=True, execute_grasp=False, max_parcels=4):
     if scene not in SCENE_CONFIGS:
         raise ValueError("unknown scene: {}".format(scene))
 
@@ -560,7 +527,7 @@ def run_scene(scene, seed, node_name=None, timeout=120, time_limit=None,
     rospy.sleep(1.0)
 
     actions = BasicActions(rospy, arm_pub)
-    execute_task(scene, actions, max_parcels=max_parcels)
+    execute_task(scene, actions, execute_grasp=execute_grasp, max_parcels=max_parcels)
 
     rospy.loginfo("task script finished; keep node alive for timer/checking")
     rospy.spin()
@@ -574,6 +541,11 @@ def main():
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--time-limit", type=float, default=None)
     parser.add_argument("--no-timer-gui", action="store_true")
+    parser.add_argument(
+        "--execute-grasp",
+        action="store_true",
+        help="actually descend, close claw, weigh, and drop. Without this, only hover above the first parcel.",
+    )
     parser.add_argument("--max-parcels", type=int, default=4)
     args = parser.parse_args()
 
@@ -584,6 +556,7 @@ def main():
         timeout=args.timeout,
         time_limit=args.time_limit,
         timer_gui=not args.no_timer_gui,
+        execute_grasp=args.execute_grasp,
         max_parcels=args.max_parcels,
     )
 
