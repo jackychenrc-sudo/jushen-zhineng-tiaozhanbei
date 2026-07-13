@@ -34,6 +34,14 @@ def validate_args(args):
         raise ValueError("maximum yaw must be within [0.5, 5.0] degrees")
 
 
+def validate_execution(args):
+    if args.execute:
+        raise ValueError(
+            "lateral execution is disabled: the current /cmd_vel controller "
+            "did not produce a measurable lateral displacement"
+        )
+
+
 def build_plan(args, current_x, current_y, current_yaw_rad):
     values = (current_x, current_y, current_yaw_rad)
     if not all(math.isfinite(value) for value in values):
@@ -163,6 +171,7 @@ def execute_lateral_pulse(args, plan, rospy):
 def main():
     args = parse_args()
     validate_args(args)
+    validate_execution(args)
     rospy, current_x, current_y, current_yaw = initialize_ros_and_read_pose(args)
     plan = build_plan(args, current_x, current_y, current_yaw)
     if args.execute:
