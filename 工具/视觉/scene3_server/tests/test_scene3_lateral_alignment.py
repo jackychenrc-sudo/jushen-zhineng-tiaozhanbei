@@ -28,6 +28,10 @@ def settings(**overrides):
 
 
 class LateralAlignmentTests(unittest.TestCase):
+    def test_execution_is_disabled_after_server_trial(self):
+        with self.assertRaisesRegex(ValueError, "lateral execution is disabled"):
+            alignment.validate_execution(settings(execute=True))
+
     def test_right_drift_plans_bounded_left_pulse(self):
         plan = alignment.build_plan(
             settings(), 0.3839, -0.1539, math.radians(-0.042)
