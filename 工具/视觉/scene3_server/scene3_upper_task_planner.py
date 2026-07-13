@@ -25,19 +25,28 @@ def raw_xyz(tray):
     values = tray.get("base_link_xyz_raw_m", tray.get("base_link_xyz_m"))
     if not isinstance(values, list) or len(values) != 3:
         raise ValueError("tray does not contain a valid base_link XYZ")
-    return [float(value) for value in values]
+    result = [float(value) for value in values]
+    if not all(math.isfinite(value) for value in result):
+        raise ValueError("tray base_link XYZ contains a non-finite value")
+    return result
 
 
 def load_stable_detection(path):
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     trays = data.get("upper_trays", [])
     temporal = data.get("temporal_validation", {})
-    if data.get("status") != "ok" or not temporal.get("passed"):
+    if (
+        data.get("algorithm") != "scene3_temporal_consensus_v1"
+        or data.get("status") != "ok"
+        or not temporal.get("passed")
+    ):
         raise ValueError("temporal detection is not trusted")
     if len(trays) != 3:
         raise ValueError("expected exactly 3 stable upper trays")
     if any(tray.get("geometry_source") != "rgbd_vertical" for tray in trays):
         raise ValueError("all trays must use RGB-D object geometry")
+    if any(not tray.get("temporal_metrics", {}).get("stable") for tray in trays):
+        raise ValueError("all tray tracks must be temporally stable")
     if data.get("target_frame") != "base_link":
         raise ValueError("stable detections must use the base_link target frame")
     return data, trays
