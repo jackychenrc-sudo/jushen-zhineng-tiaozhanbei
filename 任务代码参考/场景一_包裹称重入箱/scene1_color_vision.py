@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 """Simple color + depth parcel detector for challenge scene1.
 
-This node does not train a neural network. It first tries to detect the small
-black mark on top of each parcel label. The right claw should hover above this
-mark. If black marks are not found, it falls back to detecting non-green parcel
-blobs on the green table.
+This node does not train a neural network. It first tries to detect the yellow
+cross-shaped tape on top of each parcel. The right claw should hover above the
+cross center. If tape crosses are not found, it falls back to detecting
+non-green parcel blobs on the green table.
 """
 
 import math
@@ -33,8 +33,8 @@ class Scene1ColorVision:
         self.max_objects = int(rospy.get_param("~max_objects", 4))
         self.min_area = float(rospy.get_param("~min_area", 80.0))
         self.max_area = float(rospy.get_param("~max_area", 8000.0))
-        self.black_min_area = float(rospy.get_param("~black_min_area", 8.0))
-        self.black_max_area = float(rospy.get_param("~black_max_area", 800.0))
+        self.tape_min_area = float(rospy.get_param("~tape_min_area", 45.0))
+        self.tape_max_area = float(rospy.get_param("~tape_max_area", 4500.0))
         self.min_x = float(rospy.get_param("~min_x", 0.15))
         self.max_x = float(rospy.get_param("~max_x", 0.85))
         self.min_y = float(rospy.get_param("~min_y", -0.65))
@@ -78,8 +78,8 @@ class Scene1ColorVision:
         if color is None or depth is None:
             return
 
-        centers = self._detect_black_mark_centers(color)
-        source = "black_marks"
+        centers = self._detect_tape_cross_centers(color)
+        source = "tape_crosses"
         detections = self._detections_from_centers(
             centers, depth, camera_info, depth_msg.header.frame_id
         )
@@ -171,42 +171,44 @@ class Scene1ColorVision:
                 pass
         return None
 
-    def _detect_black_mark_centers(self, bgr):
+    def _detect_tape_cross_centers(self, bgr):
         hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-        gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
 
-        # Black marks are the dark small rectangles on the white/yellow parcel labels.
-        dark_by_hsv = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([179, 180, 85]))
-        dark_by_gray = cv2.inRange(gray, 0, 80)
-        mask = cv2.bitwise_or(dark_by_hsv, dark_by_gray)
+        # The parcel tops have a yellow/cream cross tape. It is much larger and
+        # more stable than the small black label mark, so use it as the grasp
+        # reference. Two masks are combined to cover both saturated yellow tape
+        # and pale tape under simulator lighting.
+        yellow = cv2.inRange(hsv, np.array([12, 35, 95]), np.array([48, 255, 255]))
+        pale_yellow = cv2.inRange(hsv, np.array([15, 10, 135]), np.array([45, 130, 255]))
+        mask = cv2.bitwise_or(yellow, pale_yellow)
 
         height, width = mask.shape[:2]
         roi = np.zeros_like(mask)
-        roi[int(height * 0.12):int(height * 0.90), int(width * 0.08):int(width * 0.95)] = 255
+        roi[int(height * 0.12):int(height * 0.88), int(width * 0.08):int(width * 0.95)] = 255
         mask = cv2.bitwise_and(mask, roi)
 
-        kernel = np.ones((3, 3), np.uint8)
+        kernel = np.ones((5, 5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         candidates = []
         for contour in contours:
             area = cv2.contourArea(contour)
-            if area < self.black_min_area or area > self.black_max_area:
+            if area < self.tape_min_area or area > self.tape_max_area:
                 continue
 
             x, y, w, h = cv2.boundingRect(contour)
             if w == 0 or h == 0:
                 continue
             aspect = float(w) / float(h)
-            if aspect < 0.25 or aspect > 4.0:
+            if aspect < 0.20 or aspect > 5.0:
                 continue
 
-            # Reject large robot/body dark regions by requiring compactness.
             rect_area = float(w * h)
             fill_ratio = area / rect_area if rect_area > 0 else 0.0
-            if fill_ratio < 0.20:
+            # A cross is neither a tiny speck nor a full filled rectangle.
+            if fill_ratio < 0.12 or fill_ratio > 0.92:
                 continue
 
             moments = cv2.moments(contour)
@@ -216,11 +218,11 @@ class Scene1ColorVision:
             v = int(moments["m01"] / moments["m00"])
             candidates.append((u, v, area))
 
-        # Remove near-duplicates caused by one mark splitting into multiple contours.
+        # Remove near-duplicates caused by one cross splitting into multiple contours.
         merged = []
         for candidate in sorted(candidates, key=lambda item: item[2], reverse=True):
             u, v, area = candidate
-            if any((u - old_u) ** 2 + (v - old_v) ** 2 < 18 ** 2 for old_u, old_v, _ in merged):
+            if any((u - old_u) ** 2 + (v - old_v) ** 2 < 28 ** 2 for old_u, old_v, _ in merged):
                 continue
             merged.append(candidate)
 
