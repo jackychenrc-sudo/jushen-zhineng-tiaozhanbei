@@ -85,18 +85,19 @@ DROP_POINTS = [
 
 # During debugging, never descend directly to the table. First verify that the
 # claw hovers above the parcel. Only then run with --execute-grasp.
-SAFE_APPROACH_Z = 0.28
-PICK_PRECONTACT_Z = 0.08
-PICK_GRASP_Z = 0.02
-PICK_LIFT_Z = 0.30
-WEIGH_PRECONTACT_Z = 0.08
-WEIGH_PLACE_Z = 0.04
-DROP_PLACE_Z = 0.08
+SAFE_TRAVEL_Z = 0.55
+SAFE_APPROACH_Z = 0.42
+PICK_PRECONTACT_Z = 0.18
+PICK_GRASP_Z = 0.08
+PICK_LIFT_Z = 0.36
+WEIGH_PRECONTACT_Z = 0.16
+WEIGH_PLACE_Z = 0.08
+DROP_PLACE_Z = 0.14
 
 # YOLO/vision output is expected to be in robot base/local coordinates.
-# If the detected point is the parcel center, these offsets move the target
-# slightly to a better claw contact point. Tune them after seeing logs.
-VISUAL_PICK_OFFSET = [0.0, 0.0, -0.055]
+# scene1_color_vision publishes the tape-cross center on the top face. Keep the
+# target slightly above that surface; do not push it down into the parcel.
+VISUAL_PICK_OFFSET = [0.0, 0.0, 0.03]
 VISUAL_TOPIC_CANDIDATES = [
     "/robot_yolov8_info",
     "/object_yolo_box_tf2_torso_result",
@@ -129,6 +130,10 @@ def build_ik_param():
 
 def above(point, dz):
     return [float(point[0]), float(point[1]), float(point[2]) + float(dz)]
+
+
+def travel_above(point):
+    return above(point, SAFE_TRAVEL_Z)
 
 
 class BasicActions:
@@ -330,9 +335,10 @@ class VisionParcelLocator:
     def __init__(self, rospy):
         self.rospy = rospy
 
-    def detect_pick_points(self, max_count=4, timeout=3.0):
+    def detect_pick_points(self, max_count=4, timeout=6.0):
         pose_points = self._detect_pose_array(max_count=max_count, timeout=timeout)
         if pose_points:
+            self.rospy.loginfo("using visual pick points from %s", POSE_ARRAY_TOPIC)
             return pose_points
 
         try:
@@ -374,23 +380,39 @@ class VisionParcelLocator:
     def _detect_pose_array(self, max_count=4, timeout=3.0):
         try:
             from geometry_msgs.msg import PoseArray
-            msg = self.rospy.wait_for_message(POSE_ARRAY_TOPIC, PoseArray, timeout=timeout)
         except Exception:
             return []
 
-        points = [
-            [float(p.position.x), float(p.position.y), float(p.position.z)]
-            for p in msg.poses
-            if all(math.isfinite(v) for v in [p.position.x, p.position.y, p.position.z])
-        ]
-        points = self._sort_table_points(points)[:max_count]
+        deadline = time.time() + float(timeout)
+        best_points = []
+        while time.time() < deadline and not self.rospy.is_shutdown():
+            try:
+                msg = self.rospy.wait_for_message(POSE_ARRAY_TOPIC, PoseArray, timeout=0.8)
+            except Exception:
+                continue
+
+            points = [
+                [float(p.position.x), float(p.position.y), float(p.position.z)]
+                for p in msg.poses
+                if all(math.isfinite(v) for v in [p.position.x, p.position.y, p.position.z])
+            ]
+            points = self._sort_table_points(points)[:max_count]
+            if len(points) > len(best_points):
+                best_points = points
+            if len(points) >= max_count:
+                best_points = points
+                break
+
+        if not best_points:
+            return []
+
         adjusted = [
             [
                 p[0] + VISUAL_PICK_OFFSET[0],
                 p[1] + VISUAL_PICK_OFFSET[1],
                 p[2] + VISUAL_PICK_OFFSET[2],
             ]
-            for p in points
+            for p in best_points
         ]
         if adjusted:
             self.rospy.loginfo(
@@ -556,12 +578,14 @@ def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point,
                         wait_for_weigh_color=True):
     actions.rospy.loginfo("pick parcel at %s", pick_point)
     actions.open_right_claw()
+    actions.move_right_hand(travel_above(pick_point), duration=2.0)
     actions.move_right_hand(above(pick_point, SAFE_APPROACH_Z), duration=2.0)
     actions.move_right_hand(above(pick_point, PICK_PRECONTACT_Z), duration=1.4)
 
     if not execute_grasp:
         actions.rospy.logwarn(
-            "debug mode: stopped near parcel. If the claw is centered above the parcel, rerun with --execute-grasp"
+            "debug mode: --execute-grasp is not set, so the claw will NOT close. "
+            "If the claw is centered above the parcel, rerun with --execute-grasp."
         )
         return
 
@@ -570,8 +594,10 @@ def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point,
     actions.close_right_claw()
     actions.move_right_hand(above(pick_point, PICK_PRECONTACT_Z), duration=1.0)
     actions.move_right_hand(above(pick_point, PICK_LIFT_Z), duration=1.8)
+    actions.move_right_hand(travel_above(pick_point), duration=1.2)
 
     actions.rospy.loginfo("place parcel on weighing area at %s", weigh_point)
+    actions.move_right_hand(travel_above(weigh_point), duration=1.8)
     actions.move_right_hand(above(weigh_point, SAFE_APPROACH_Z), duration=2.0)
     actions.move_right_hand(above(weigh_point, WEIGH_PRECONTACT_Z), duration=1.2)
     actions.move_right_hand(above(weigh_point, WEIGH_PLACE_Z), duration=1.4)
@@ -579,6 +605,7 @@ def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point,
     actions.open_right_claw()
     actions.move_right_hand(above(weigh_point, WEIGH_PRECONTACT_Z), duration=1.0)
     actions.move_right_hand(above(weigh_point, SAFE_APPROACH_Z), duration=1.2)
+    actions.move_right_hand(travel_above(weigh_point), duration=1.0)
 
     if wait_for_weigh_color and color_watcher is not None:
         color_watcher.wait_for_color_change(above(weigh_point, WEIGH_PLACE_Z))
@@ -586,6 +613,7 @@ def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point,
         actions.rospy.sleep(1.2)
 
     actions.rospy.loginfo("pick weighed parcel back from weighing area")
+    actions.move_right_hand(travel_above(weigh_point), duration=1.2)
     actions.move_right_hand(above(weigh_point, SAFE_APPROACH_Z), duration=1.2)
     actions.move_right_hand(above(weigh_point, WEIGH_PRECONTACT_Z), duration=1.2)
     actions.move_right_hand(above(weigh_point, WEIGH_PLACE_Z), duration=1.4)
@@ -593,12 +621,15 @@ def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point,
     actions.close_right_claw()
     actions.move_right_hand(above(weigh_point, WEIGH_PRECONTACT_Z), duration=1.0)
     actions.move_right_hand(above(weigh_point, PICK_LIFT_Z), duration=1.8)
+    actions.move_right_hand(travel_above(weigh_point), duration=1.2)
 
     actions.rospy.loginfo("drop parcel at %s", drop_point)
+    actions.move_right_hand(travel_above(drop_point), duration=1.8)
     actions.move_right_hand(above(drop_point, SAFE_APPROACH_Z), duration=2.0)
     actions.move_right_hand(above(drop_point, DROP_PLACE_Z), duration=1.6)
     actions.open_right_claw()
     actions.move_right_hand(above(drop_point, SAFE_APPROACH_Z), duration=1.8)
+    actions.move_right_hand(travel_above(drop_point), duration=1.2)
 
 
 def run_scene1(actions, execute_grasp=False, max_parcels=4, wait_for_weigh_color=True):
@@ -613,6 +644,16 @@ def run_scene1(actions, execute_grasp=False, max_parcels=4, wait_for_weigh_color
 
     visual_points = VisionParcelLocator(actions.rospy).detect_pick_points(max_count=4)
     pick_points = visual_points if visual_points else PICK_POINTS
+    if visual_points:
+        actions.rospy.loginfo(
+            "scene1 using VISUAL pick points: %s",
+            [[round(v, 3) for v in point] for point in pick_points],
+        )
+    else:
+        actions.rospy.logwarn(
+            "scene1 using FIXED fallback pick points: %s",
+            [[round(v, 3) for v in point] for point in pick_points],
+        )
 
     for index, pick_point in enumerate(pick_points[:max_parcels]):
         if actions.rospy.is_shutdown():
