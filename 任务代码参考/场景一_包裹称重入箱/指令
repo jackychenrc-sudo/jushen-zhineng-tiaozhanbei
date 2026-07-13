@@ -1,0 +1,15 @@
+指令
+
+
+
+sudo docker load -i kuavo_challenge_cup_2026_latest.tar.gz
+
+cd ~/code/leju-kuavo-challenge-cup-2026-master
+
+sudo ./docker/run_with_gpu_for_challenge.sh
+
+cd /root/kuavo_ws
+source installed/setup.zsh
+source devel/setup.zsh
+
+rosrun challenge_cup_task_template challenge_task.py --scene scene1 --seed 3
