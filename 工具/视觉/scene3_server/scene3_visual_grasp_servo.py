@@ -464,16 +464,16 @@ def run_ros(args):
                 return target, tcp_median, target_spread, tcp_spread
         raise RuntimeError("timed out waiting for refined visual grasp observations")
 
-    print("绛夊緟涓夊抚绮剧偧鎶撳彇鐐瑰拰澶圭埅TCP锛涗笉浣跨敤鍥哄畾鍍忕礌鎴栧満鏅潗鏍?)
+    print("Waiting for three refined grasp-point and gripper-TCP observations")
     target, tcp, target_spread, tcp_spread = observe()
     error = target - tcp
-    print("绮剧偧鎶撳彇鐐?", np.round(target, 4).tolist())
-    print("澶圭埅TCP:", np.round(tcp, 4).tolist())
-    print("TCP璇樊:", np.round(error, 4).tolist(), "norm={:.4f}m".format(np.linalg.norm(error)))
-    print("涓夊抚娉㈠姩: target={:.4f}m tcp={:.4f}m".format(target_spread, tcp_spread))
+    print("Refined grasp point:", np.round(target, 4).tolist())
+    print("Gripper TCP:", np.round(tcp, 4).tolist())
+    print("TCP error:", np.round(error, 4).tolist(), "norm={:.4f}m".format(np.linalg.norm(error)))
+    print("Three-frame spread: target={:.4f}m tcp={:.4f}m".format(target_spread, tcp_spread))
 
     if not args.execute:
-        print("VISUAL_SERVO_DRY_RUN_OK锛氬彧瀹屾垚鎶撳彇鐐?TCP鏍￠獙锛屾湭鎺у埗鏈烘鑷傚拰澶圭埅")
+        print("VISUAL_SERVO_DRY_RUN_OK: observation only; no arm or claw command sent")
         return 0
     if args.confirmation != EXECUTION_CONFIRMATION:
         raise RuntimeError(
@@ -501,7 +501,7 @@ def run_ros(args):
             forward_tolerance_m=args.forward_tolerance,
         )
         print(
-            "瑙嗚闂幆{:02d}: target={} tcp={} error={} norm={:.4f}m gate={}".format(
+            "Visual loop {:02d}: target={} tcp={} error={} norm={:.4f}m gate={}".format(
                 iteration,
                 np.round(target, 4).tolist(),
                 np.round(tcp, 4).tolist(),
@@ -515,7 +515,7 @@ def run_ros(args):
             if aligned_observations >= args.required_aligned_observations:
                 if not task.close_claw():
                     raise RuntimeError("visual gate passed but claw close failed")
-                print("VISUAL_SERVO_GRASP_OK锛氭寚灏朤CP杩炵画瀵瑰噯鍚庡凡闂埅锛涘皻鏈娊鍑?)
+                print("VISUAL_SERVO_GRASP_OK: claw closed after consecutive TCP alignment; no extraction yet")
                 return 0
             rospy.sleep(args.settle_seconds)
             continue
@@ -535,7 +535,7 @@ def run_ros(args):
         wrist = np.asarray(current_poses.right_pose.pos_xyz, dtype=float)
         wrist_target = wrist + step
         print(
-            "  IK寰={}m wrist_target={}".format(
+            "  IK step={}m wrist_target={}".format(
                 np.round(step, 4).tolist(),
                 np.round(wrist_target, 4).tolist(),
             )
