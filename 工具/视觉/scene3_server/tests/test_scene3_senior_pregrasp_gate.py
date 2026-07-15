@@ -15,21 +15,50 @@ import scene3_senior_pregrasp_gate as gate
 
 
 class FakePoint(object):
-    x = 0.58
-    y = -0.20
-    z = 0.25
+    def __init__(self):
+        self.x = 0.58
+        self.y = -0.20
+        self.z = 0.25
+
+
+class FakeHeader(object):
+    def __init__(self):
+        self.frame_id = "base_link"
+        self.stamp = None
 
 
 class FakeTarget(object):
-    point = FakePoint()
+    def __init__(self):
+        self.header = FakeHeader()
+        self.point = FakePoint()
+
+
+class FakePublisher(object):
+    def __init__(self, ros, topic, message_type, queue_size, latch):
+        self.ros = ros
+        self.topic = topic
+        self.message_type = message_type
+        self.queue_size = queue_size
+        self.latch = latch
+
+    def publish(self, message):
+        self.ros.published.append((self.topic, message, self.latch))
 
 
 class FakeRos(object):
     def __init__(self):
         self.logs = []
+        self.published = []
+        self.params = {}
 
     def loginfo(self, message, *args):
         self.logs.append(message % args if args else message)
+
+    def Publisher(self, topic, message_type, queue_size, latch):
+        return FakePublisher(self, topic, message_type, queue_size, latch)
+
+    def set_param(self, name, value):
+        self.params[name] = list(value)
 
 
 class FakeTask(object):
@@ -75,6 +104,13 @@ class SeniorPregraspGateTest(unittest.TestCase):
         self.assertEqual([("move_right_hand", [0.42, -0.20, 0.27], 3.0)], moves)
         self.assertNotIn("close_claw", [call[0] for call in task.calls])
         self.assertEqual("stop_base", task.calls[-1][0])
+        self.assertEqual(1, len(task.rospy.published))
+        self.assertTrue(task.rospy.published[0][2])
+        self.assertEqual(
+            [0.58, -0.20, 0.25],
+            task.rospy.params[gate.LOCKED_TARGET_PARAM],
+        )
+        self.assertEqual([0.58, -0.20, 0.25], task._scene3_locked_target_xyz)
 
     def test_missing_target_fails_before_arm_or_claw(self):
         task = FakeTask(target=False)
@@ -95,9 +131,16 @@ class SeniorPregraspGateTest(unittest.TestCase):
         task = FakeTask()
         self.assertFalse(installed(task))
         self.assertIn("SENIOR_PREGRASP_READY", task.rospy.logs[-1])
+        self.assertIn("locked_target", task.rospy.logs[-1])
         self.assertEqual(1, len([c for c in task.calls if c[0] == "move_right_hand"]))
+
+    def test_non_base_target_is_blocked_before_arm(self):
+        task = FakeTask()
+        task.target.header.frame_id = "odom"
+        with self.assertRaisesRegex(RuntimeError, "must already be in base_link"):
+            gate.run_pregrasp_only(task)
+        self.assertFalse(any(call[0] == "move_right_hand" for call in task.calls))
 
 
 if __name__ == "__main__":
     unittest.main()
-
