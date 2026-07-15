@@ -120,8 +120,9 @@ class WristPrecloseGeometryTest(unittest.TestCase):
             ["--camera-frame", "right_wrist_camera_link"]
         )
         self.assertEqual("right_wrist_camera_link", args.camera_frame)
+        self.assertIn("locked_target_base", args.target_topic)
+        self.assertIn("locked_target_base_xyz", args.target_param)
 
 
 if __name__ == "__main__":
     unittest.main()
-
