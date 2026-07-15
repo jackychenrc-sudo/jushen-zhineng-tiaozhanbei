@@ -102,7 +102,8 @@ def run_pregrasp_only(task, target_timeout=5.0, motion_seconds=2.5,
 
 def install_pregrasp_gate(senior_module, target_timeout=5.0, motion_seconds=2.5,
                           locked_target_topic=LOCKED_TARGET_TOPIC,
-                          locked_target_param=LOCKED_TARGET_PARAM):
+                          locked_target_param=LOCKED_TARGET_PARAM,
+                          hold_after_pregrasp=True):
     """Patch one stage boundary without changing the senior source file."""
     def gated_grasp(task):
         pregrasp = run_pregrasp_only(
@@ -118,6 +119,15 @@ def install_pregrasp_gate(senior_module, target_timeout=5.0, motion_seconds=2.5,
             [round(value, 4) for value in pregrasp],
             [round(value, 4) for value in task._scene3_locked_target_xyz],
         )
+        if hold_after_pregrasp:
+            task.rospy.loginfo(
+                "SENIOR_PREGRASP_HOLDING: simulation remains online for "
+                "wrist-camera validation; press Ctrl-C only after the "
+                "second-terminal check"
+            )
+            # Blocking here is intentional: returning to the senior launcher
+            # immediately tears down MuJoCo and leaves only stale TF data.
+            task.rospy.spin()
         return False
 
     senior_module.Scene3Task.grasp_tray_from_latest_target = gated_grasp
@@ -151,6 +161,9 @@ def main():
     locked_target_param = os.environ.get(
         "SCENE3_LOCKED_TARGET_PARAM", LOCKED_TARGET_PARAM
     )
+    hold_after_pregrasp = os.environ.get(
+        "SCENE3_HOLD_AFTER_PREGRASP", "1"
+    ).strip().lower() not in ("0", "false", "no", "off")
     senior_module = load_senior_module(senior_dir)
     install_pregrasp_gate(
         senior_module,
@@ -158,6 +171,7 @@ def main():
         motion_seconds=motion_seconds,
         locked_target_topic=locked_target_topic,
         locked_target_param=locked_target_param,
+        hold_after_pregrasp=hold_after_pregrasp,
     )
     return senior_module.main()
 
