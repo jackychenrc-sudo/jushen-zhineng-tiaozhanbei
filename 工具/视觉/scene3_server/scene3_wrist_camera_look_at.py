@@ -454,6 +454,12 @@ def camera_state(tf_buffer, rospy, camera_frame, target_base):
 
 
 def run_ros(args):
+    if args.execute:
+        raise RuntimeError(
+            "WRIST_LOOK_AT_EXECUTION_DISABLED: camera optical alignment is "
+            "not a valid gripper insertion-orientation objective; use "
+            "scene3_senior_orientation_step.py"
+        )
     import rospy
     import tf2_geometry_msgs  # noqa: F401
     import tf2_ros
