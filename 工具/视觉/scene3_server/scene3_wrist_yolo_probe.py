@@ -9,8 +9,8 @@ wrist image?
 
 For every wrist YOLO box it extracts the dominant depth surface, chooses the
 surface edge nearest the legal TF gripper TCP, and transforms that point to
-``base_link``.  When a latched senior target topic is supplied, candidates are
-matched by 3-D distance instead of confidence alone.  The script never
+``base_link``.  Candidates are matched to the target latched by the senior
+pregrasp wrapper using 3-D distance instead of confidence alone.  The script never
 publishes a base, arm or claw command.
 """
 
@@ -46,6 +46,8 @@ DEFAULT_MODEL_PATH = (
 DEFAULT_DEBUG_TOPIC = (
     "/challenge_cup_task_template/scene3/wrist_yolo_debug/compressed"
 )
+DEFAULT_TARGET_TOPIC = "/challenge_cup_task_template/scene3/locked_target_base"
+DEFAULT_TARGET_PARAM = "/challenge_cup_task_template/scene3/locked_target_base_xyz"
 
 
 def normalize_class_name(value):
@@ -157,6 +159,16 @@ class WristYoloProbe(object):
         self.info = None
         self.latest_target = None
         self.locked_target_base = None
+        if args.target_param and rospy.has_param(args.target_param):
+            locked = np.asarray(rospy.get_param(args.target_param), dtype=float)
+            if locked.shape != (3,) or not np.all(np.isfinite(locked)):
+                raise RuntimeError("locked senior target parameter is invalid")
+            self.locked_target_base = locked
+            print(
+                "Loaded locked senior target base_link={}".format(
+                    np.round(locked, 4).tolist()
+                )
+            )
         self.samples = []
         self.processed_frames = 0
         self.last_error = "waiting for synchronized wrist RGB-D"
@@ -482,9 +494,10 @@ def build_parser():
     parser.add_argument("--info-topic", default=DEFAULT_INFO_TOPIC)
     parser.add_argument(
         "--target-topic",
-        default="",
-        help="optional latched senior target PointStamped topic",
+        default=DEFAULT_TARGET_TOPIC,
+        help="latched senior target PointStamped topic",
     )
+    parser.add_argument("--target-param", default=DEFAULT_TARGET_PARAM)
     parser.add_argument("--debug-topic", default=DEFAULT_DEBUG_TOPIC)
     parser.add_argument("--camera-frame", default="right_wrist_camera_link")
     parser.add_argument("--left-finger-frame", default=DEFAULT_LEFT_FINGER_FRAME)
