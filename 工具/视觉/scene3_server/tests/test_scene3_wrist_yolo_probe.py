@@ -23,6 +23,11 @@ def candidate(xyz, confidence=0.8, bbox=(10, 20, 30, 40)):
 
 
 class WristYoloProbeTest(unittest.TestCase):
+    def test_defaults_match_locked_senior_target(self):
+        args = PROBE.build_parser().parse_args([])
+        self.assertIn("locked_target_base", args.target_topic)
+        self.assertIn("locked_target_base_xyz", args.target_param)
+
     def test_clamp_xyxy(self):
         self.assertEqual(
             PROBE.clamp_xyxy_to_xywh((100, 200, 3), (-5.2, 10.4, 220.0, 90.7)),
