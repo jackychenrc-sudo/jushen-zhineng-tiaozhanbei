@@ -68,13 +68,13 @@ SAFE_PREGRASP_DEG = [
 # If the claw misses a parcel, run arm_keyboard_control.py, record its printed
 # pos=[x,y,z], and replace the corresponding point below.
 PICK_POINTS = [
-    [0.42, -0.34, -0.22],
+    [0.322,-0.289,0.016],
     [0.42, -0.12, -0.22],
     [0.55, -0.34, -0.22],
     [0.55, -0.12, -0.22],
 ]
 
-WEIGH_POINT = [0.386, -0.605, 0.061]
+WEIGH_POINT = [0.486, -0.605, 0.061]
 
 DROP_POINTS = [
     [0.586, 0.265, 0.422],
@@ -86,8 +86,8 @@ DROP_POINTS = [
 # During debugging, never descend directly to the table. First verify that the
 # claw hovers above the parcel. Only then run with --execute-grasp.
 SAFE_APPROACH_Z = 0.18
-PICK_PRECONTACT_Z = 0.08
-PICK_GRASP_Z = 0.02
+PICK_PRECONTACT_Z = 0.1
+PICK_GRASP_Z =-0.1
 PICK_LIFT_Z = 0.30
 WEIGH_PRECONTACT_Z = 0.08
 WEIGH_PLACE_Z = 0.04
@@ -556,6 +556,7 @@ def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point,
                         wait_for_weigh_color=True):
     actions.rospy.loginfo("pick parcel at %s", pick_point)
     actions.open_right_claw()
+    
     actions.move_right_hand(above(pick_point, SAFE_APPROACH_Z), duration=2.0)
     actions.move_right_hand(above(pick_point, PICK_PRECONTACT_Z), duration=1.4)
 
@@ -601,7 +602,7 @@ def pick_weigh_drop_one(actions, pick_point, weigh_point, drop_point,
     actions.move_right_hand(above(drop_point, SAFE_APPROACH_Z), duration=1.8)
 
 
-def run_scene1(actions, execute_grasp=False, max_parcels=4, wait_for_weigh_color=True):
+def run_scene1(actions, execute_grasp=True, max_parcels=4, wait_for_weigh_color=True):
     actions.rospy.loginfo("scene1: start parcel weighing and placing")
     actions.wait_for_arm_subscriber()
     actions.look_down()
@@ -609,11 +610,11 @@ def run_scene1(actions, execute_grasp=False, max_parcels=4, wait_for_weigh_color
 
     actions.move_arm_degrees(SAFE_PREGRASP_DEG, duration=2.0)
     actions.open_right_claw()
-    color_watcher = HeadCameraColorWatcheropen(actions.rospy)
+    color_watcher = HeadCameraColorWatcher(actions.rospy)
 
     visual_points = VisionParcelLocator(actions.rospy).detect_pick_points(max_count=4)
   
-  
+    print("+++++++++++++++++++++++++++++++++视觉节点存在dikfjsdkjfsdf")
     pick_points = visual_points if visual_points else PICK_POINTS
 
     for index, pick_point in enumerate(pick_points[:max_parcels]):
