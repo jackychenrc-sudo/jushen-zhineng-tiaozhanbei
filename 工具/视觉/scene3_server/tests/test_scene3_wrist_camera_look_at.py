@@ -20,6 +20,20 @@ SPEC.loader.exec_module(LOOK_AT)
 
 
 class WristCameraLookAtTest(unittest.TestCase):
+    def test_official_pose_hard_mode_is_three(self):
+        class Param(object):
+            pass
+
+        param = LOOK_AT.configure_pose_hard_ik_param(Param())
+        self.assertEqual(3, param.constraint_mode)
+        self.assertAlmostEqual(0.004, param.pos_constraint_tol)
+        self.assertAlmostEqual(0.02, param.oritation_constraint_tol)
+
+    def test_default_target_is_locked_pregrasp_target(self):
+        args = LOOK_AT.build_parser().parse_args([])
+        self.assertIn("locked_target_base", args.target_topic)
+        self.assertIn("locked_target_base_xyz", args.target_param)
+
     def test_quaternion_matrix_roundtrip(self):
         source = np.array([-0.08, -0.15, 0.86, 0.48], dtype=float)
         source /= np.linalg.norm(source)
@@ -85,6 +99,53 @@ class WristCameraLookAtTest(unittest.TestCase):
         )
         self.assertFalse(ok)
         self.assertFalse(checks["optical_error_reduced"])
+
+    def test_predicted_camera_alignment_tracks_eef_rotation(self):
+        target = np.array([
+            math.sin(math.radians(20.0)),
+            0.0,
+            math.cos(math.radians(20.0)),
+        ])
+        predicted_rotation = LOOK_AT.axis_angle_matrix(
+            [0.0, 1.0, 0.0], math.radians(4.0)
+        )
+        predicted_quaternion = LOOK_AT.matrix_to_quaternion(predicted_rotation)
+        _, _, angle = LOOK_AT.predict_camera_alignment(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+            [0.0, 0.0, 0.0],
+            np.eye(3),
+            [0.0, 0.0, 0.0],
+            predicted_quaternion,
+            target,
+        )
+        self.assertAlmostEqual(16.0, math.degrees(angle), places=5)
+
+    def test_verified_nonzero_pose_hard_plan_passes(self):
+        ok, checks, reduction = LOOK_AT.validate_ik_plan(
+            [0.0] * 7,
+            [0.0, 0.5, -1.0, 0.4, 0.0, 0.0, 0.0],
+            0.002,
+            0.5,
+            math.radians(20.0),
+            math.radians(16.0),
+        )
+        self.assertTrue(ok)
+        self.assertTrue(all(checks.values()))
+        self.assertAlmostEqual(4.0, reduction)
+
+    def test_zero_joint_pose_hard_plan_is_blocked(self):
+        ok, checks, _ = LOOK_AT.validate_ik_plan(
+            [0.0] * 7,
+            [0.0] * 7,
+            0.0,
+            0.0,
+            math.radians(20.0),
+            math.radians(20.0),
+        )
+        self.assertFalse(ok)
+        self.assertFalse(checks["right_joint_motion_nonzero"])
+        self.assertFalse(checks["predicted_optical_error_reduced"])
 
 
 if __name__ == "__main__":
