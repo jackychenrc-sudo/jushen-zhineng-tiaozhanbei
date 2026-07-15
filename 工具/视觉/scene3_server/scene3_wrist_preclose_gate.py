@@ -533,7 +533,11 @@ def run_ros(args):
                 source_target = state["target"]
             if info is None or source_target is None:
                 return
-            camera_frame = str(info.header.frame_id)
+            # The Scene3 simulator currently labels CameraInfo with
+            # ``Right wrist Camera View`` although the image projection axes
+            # are provided by ``right_wrist_camera_link``.  Keep the runtime
+            # override explicit instead of silently assuming either frame.
+            camera_frame = str(args.camera_frame or info.header.frame_id)
             if not camera_frame:
                 raise RuntimeError("right camera CameraInfo has no frame_id")
 
@@ -731,6 +735,11 @@ def build_parser():
     parser.add_argument("--rgb-topic", default=DEFAULT_RGB_TOPIC)
     parser.add_argument("--depth-topic", default=DEFAULT_DEPTH_TOPIC)
     parser.add_argument("--info-topic", default=DEFAULT_INFO_TOPIC)
+    parser.add_argument(
+        "--camera-frame",
+        default="",
+        help="TF frame whose +Z axis matches the right image projection",
+    )
     parser.add_argument("--target-topic", default=DEFAULT_TARGET_TOPIC)
     parser.add_argument("--debug-topic", default=DEFAULT_DEBUG_TOPIC)
     parser.add_argument("--left-finger-frame", default=DEFAULT_LEFT_FINGER_FRAME)
