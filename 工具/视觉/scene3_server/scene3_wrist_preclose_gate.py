@@ -31,7 +31,8 @@ PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DEFAULT_RGB_TOPIC = "/cam_r/color/image_raw/compressed"
 DEFAULT_DEPTH_TOPIC = "/cam_r/depth/image_rect_raw/compressedDepth"
 DEFAULT_INFO_TOPIC = "/cam_r/color/camera_info"
-DEFAULT_TARGET_TOPIC = "/challenge_cup_task_template/scene3/grasp_point_base"
+DEFAULT_TARGET_TOPIC = "/challenge_cup_task_template/scene3/locked_target_base"
+DEFAULT_TARGET_PARAM = "/challenge_cup_task_template/scene3/locked_target_base_xyz"
 DEFAULT_DEBUG_TOPIC = "/challenge_cup_task_template/scene3/wrist_preclose_debug/compressed"
 
 DEFAULT_LEFT_FINGER_FRAME = "right_gripper_left_inner_knuckle"
@@ -514,6 +515,17 @@ def run_ros(args):
         "observations": [],
         "last_error": "waiting for input",
     }
+    if args.target_param and rospy.has_param(args.target_param):
+        locked_xyz = np.asarray(rospy.get_param(args.target_param), dtype=float)
+        if locked_xyz.shape != (3,) or not np.all(np.isfinite(locked_xyz)):
+            raise RuntimeError("locked senior target parameter is invalid")
+        locked_message = PointStamped()
+        locked_message.header.frame_id = "base_link"
+        locked_message.header.stamp = rospy.Time(0)
+        locked_message.point.x = float(locked_xyz[0])
+        locked_message.point.y = float(locked_xyz[1])
+        locked_message.point.z = float(locked_xyz[2])
+        state["target"] = locked_message
     debug_pub = rospy.Publisher(args.debug_topic, CompressedImage, queue_size=1)
 
     def info_callback(message):
@@ -775,6 +787,7 @@ def build_parser():
         help="TF frame whose +Z axis matches the right image projection",
     )
     parser.add_argument("--target-topic", default=DEFAULT_TARGET_TOPIC)
+    parser.add_argument("--target-param", default=DEFAULT_TARGET_PARAM)
     parser.add_argument("--debug-topic", default=DEFAULT_DEBUG_TOPIC)
     parser.add_argument("--left-finger-frame", default=DEFAULT_LEFT_FINGER_FRAME)
     parser.add_argument("--right-finger-frame", default=DEFAULT_RIGHT_FINGER_FRAME)
@@ -802,4 +815,3 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
