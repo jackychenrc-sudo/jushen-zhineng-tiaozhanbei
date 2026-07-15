@@ -50,6 +50,7 @@ class FakeRos(object):
         self.logs = []
         self.published = []
         self.params = {}
+        self.spin_calls = 0
 
     def loginfo(self, message, *args):
         self.logs.append(message % args if args else message)
@@ -59,6 +60,9 @@ class FakeRos(object):
 
     def set_param(self, name, value):
         self.params[name] = list(value)
+
+    def spin(self):
+        self.spin_calls += 1
 
 
 class FakeTask(object):
@@ -130,9 +134,22 @@ class SeniorPregraspGateTest(unittest.TestCase):
         installed = gate.install_pregrasp_gate(module, motion_seconds=2.0)
         task = FakeTask()
         self.assertFalse(installed(task))
-        self.assertIn("SENIOR_PREGRASP_READY", task.rospy.logs[-1])
-        self.assertIn("locked_target", task.rospy.logs[-1])
+        self.assertTrue(any("SENIOR_PREGRASP_READY" in line
+                            for line in task.rospy.logs))
+        self.assertTrue(any("locked_target" in line
+                            for line in task.rospy.logs))
+        self.assertIn("SENIOR_PREGRASP_HOLDING", task.rospy.logs[-1])
+        self.assertEqual(1, task.rospy.spin_calls)
         self.assertEqual(1, len([c for c in task.calls if c[0] == "move_right_hand"]))
+
+    def test_installed_gate_can_skip_hold_for_offline_use(self):
+        module = types.SimpleNamespace(Scene3Task=types.SimpleNamespace())
+        installed = gate.install_pregrasp_gate(
+            module, motion_seconds=2.0, hold_after_pregrasp=False
+        )
+        task = FakeTask()
+        self.assertFalse(installed(task))
+        self.assertEqual(0, task.rospy.spin_calls)
 
     def test_non_base_target_is_blocked_before_arm(self):
         task = FakeTask()
