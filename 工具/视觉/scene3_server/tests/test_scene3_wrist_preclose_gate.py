@@ -115,6 +115,12 @@ class WristPrecloseGeometryTest(unittest.TestCase):
         passed, _ = gate.stable_preclose_gate(observations)
         self.assertFalse(passed)
 
+    def test_parser_accepts_explicit_projection_frame(self):
+        args = gate.build_parser().parse_args(
+            ["--camera-frame", "right_wrist_camera_link"]
+        )
+        self.assertEqual("right_wrist_camera_link", args.camera_frame)
+
 
 if __name__ == "__main__":
     unittest.main()
