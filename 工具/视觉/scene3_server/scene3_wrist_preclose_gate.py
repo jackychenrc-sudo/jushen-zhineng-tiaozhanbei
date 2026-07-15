@@ -510,6 +510,7 @@ def run_ros(args):
     state = {
         "camera_info": None,
         "target": None,
+        "latched_target": None,
         "observations": [],
         "last_error": "waiting for input",
     }
@@ -530,7 +531,7 @@ def run_ros(args):
         try:
             with lock:
                 info = state["camera_info"]
-                source_target = state["target"]
+                source_target = state["latched_target"] or state["target"]
             if info is None or source_target is None:
                 return
             # The Scene3 simulator currently labels CameraInfo with
@@ -577,6 +578,39 @@ def run_ros(args):
             refined_xyz = deproject_pixel(
                 component["target_pixel"], component["target_depth_mm"], camera_k
             )
+
+            # Once wrist RGB-D has found the prompted tray surface, preserve
+            # that physical point in the original base frame.  The head YOLO
+            # box can jump to an adjacent tray when the arm occludes its view;
+            # continuing to chase that box would change target identity.
+            with lock:
+                needs_latch = state["latched_target"] is None
+            if needs_latch:
+                refined_camera = PointStamped()
+                refined_camera.header.frame_id = camera_frame
+                refined_camera.header.stamp = rospy.Time(0)
+                refined_camera.point.x = float(refined_xyz[0])
+                refined_camera.point.y = float(refined_xyz[1])
+                refined_camera.point.z = float(refined_xyz[2])
+                latched_target = tf_buffer.transform(
+                    refined_camera,
+                    source_target.header.frame_id,
+                    rospy.Duration(0.3),
+                )
+                latched_target.header.stamp = rospy.Time(0)
+                with lock:
+                    if state["latched_target"] is None:
+                        state["latched_target"] = latched_target
+                print(
+                    "Latched wrist target in {}: {}".format(
+                        latched_target.header.frame_id,
+                        [
+                            round(float(latched_target.point.x), 4),
+                            round(float(latched_target.point.y), 4),
+                            round(float(latched_target.point.z), 4),
+                        ],
+                    )
+                )
 
             transforms = []
             for frame in (
