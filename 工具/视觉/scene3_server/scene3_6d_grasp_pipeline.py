@@ -20,7 +20,6 @@ never copied into an arm command.
 from __future__ import print_function
 
 import argparse
-import math
 import os
 import subprocess
 import sys
