@@ -51,6 +51,17 @@ def distance(first, second):
     )
 
 
+def angle_degrees(first, second):
+    first = np.asarray(first, dtype=float)
+    second = np.asarray(second, dtype=float)
+    first_norm = float(np.linalg.norm(first))
+    second_norm = float(np.linalg.norm(second))
+    if first_norm < 1e-9 or second_norm < 1e-9:
+        raise ValueError("cannot measure an angle from a zero-length vector")
+    cosine = float(np.dot(first, second) / (first_norm * second_norm))
+    return math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+
+
 def bounded_error_step(error_xyz, maximum_step_m=0.03, residual_m=0.018):
     error = np.asarray(error_xyz, dtype=float)
     if error.shape != (3,) or not np.all(np.isfinite(error)):
@@ -229,7 +240,7 @@ class WristDepthObserver(object):
                         self.rospy.Duration(0.3),
                     )
                 )
-            left_tip, right_tip, tcp_camera, _ = estimate_finger_tips(
+            left_tip, right_tip, tcp_camera, forward_camera = estimate_finger_tips(
                 _translation_xyz(transforms[0]),
                 _translation_xyz(transforms[1]),
                 _translation_xyz(transforms[2]),
@@ -250,13 +261,22 @@ class WristDepthObserver(object):
             )
             target_base = self._transform_xyz(target_camera, camera_frame, "base_link")
             tcp_base = self._transform_xyz(tcp_camera, camera_frame, "base_link")
+            axis_tip_base = self._transform_xyz(
+                tcp_camera + 0.10 * forward_camera, camera_frame, "base_link"
+            )
+            axis_base = axis_tip_base - tcp_base
+            axis_base /= float(np.linalg.norm(axis_base))
             observation = {
                 "stamp": (int(message.header.stamp.secs), int(message.header.stamp.nsecs)),
                 "target_base": target_base,
                 "tcp_base": tcp_base,
                 "target_camera": np.asarray(target_camera, dtype=float),
                 "tcp_camera": np.asarray(tcp_camera, dtype=float),
+                "axis_base": axis_base,
                 "obstacle_ratio": float(gate["obstacle_ratio"]),
+                "segment_distance": float(gate["segment_distance_m"]),
+                "segment_parameter": float(gate["segment_parameter"]),
+                "finger_gap": float(gate["finger_gap_m"]),
                 "gate_checks": dict(gate["checks"]),
             }
             with self.lock:
@@ -308,10 +328,20 @@ class WristDepthObserver(object):
                             np.asarray([item["tcp_camera"] for item in samples]),
                             axis=0,
                         ),
+                        "axis": self._median_axis(samples),
                         "target_spread": target_spread,
                         "tcp_spread": tcp_spread,
                         "obstacle_ratio": max(
                             item["obstacle_ratio"] for item in samples
+                        ),
+                        "segment_distance": float(
+                            np.median([item["segment_distance"] for item in samples])
+                        ),
+                        "segment_parameter": float(
+                            np.median([item["segment_parameter"] for item in samples])
+                        ),
+                        "finger_gap": float(
+                            np.median([item["finger_gap"] for item in samples])
                         ),
                         "gate_checks": samples[-1]["gate_checks"],
                     }
@@ -319,6 +349,14 @@ class WristDepthObserver(object):
         raise RuntimeError(
             "no stable wrist depth observation: {}".format(last_error or "unstable")
         )
+
+    @staticmethod
+    def _median_axis(samples):
+        axis = np.median(np.asarray([item["axis_base"] for item in samples]), axis=0)
+        norm = float(np.linalg.norm(axis))
+        if norm < 1e-9:
+            raise RuntimeError("stable wrist observations have a degenerate gripper axis")
+        return axis / norm
 
 
 def run(args):
@@ -478,6 +516,14 @@ def run(args):
     print("Wrist TCP base:", np.round(before["tcp"], 4).tolist())
     print("TCP error: {:.1f}mm".format(error_norm * 1000.0))
     print("Obstacle ratio: {:.3f}".format(before["obstacle_ratio"]))
+    print("Target-to-finger segment: {:.1f}mm".format(before["segment_distance"] * 1000.0))
+    print("Target segment parameter: {:.3f}".format(before["segment_parameter"]))
+    print("Finger gap: {:.1f}mm".format(before["finger_gap"] * 1000.0))
+    print("Gripper-axis error: {:.1f}deg".format(angle_degrees(before["axis"], error_xyz)))
+    failed_before = [
+        name for name, passed in before["gate_checks"].items() if not passed
+    ]
+    print("Preclose conditions still failing:", failed_before)
     if before["obstacle_ratio"] > args.maximum_obstacle_ratio:
         raise RuntimeError("wrist depth sees an obstacle in the closing corridor")
     if error_norm > args.maximum_start_error:
@@ -568,11 +614,24 @@ def run(args):
                     np.max(np.abs(np.rad2deg(after_arm[:7] - baseline[:7])))
                 )
                 <= args.maximum_uncommanded_motion_deg,
-                "wrist_bounded": float(
-                    np.max(np.abs(np.rad2deg(after_arm[11:14] - baseline[11:14])))
+                "gripper_axis_motion_bounded": angle_degrees(
+                    before["axis"], after["axis"]
                 )
-                <= args.maximum_uncommanded_motion_deg,
+                <= args.maximum_axis_change_deg,
+                "finger_gap_stable": abs(
+                    after["finger_gap"] - before["finger_gap"]
+                )
+                <= args.maximum_finger_gap_change,
+                "segment_distance_not_worse": after["segment_distance"]
+                <= before["segment_distance"] + args.maximum_segment_worsening,
             }
+        )
+        actual_wrist_motion = float(
+            np.max(np.abs(np.rad2deg(after_arm[11:14] - baseline[11:14])))
+        )
+        axis_change = angle_degrees(before["axis"], after["axis"])
+        axis_error_after = angle_degrees(
+            after["axis"], after["target"] - after["tcp"]
         )
         print("TCP error: {:.1f}mm -> {:.1f}mm".format(error_norm * 1000.0, after_error * 1000.0))
         print("Observed TCP motion: {:.1f}mm".format(tcp_motion * 1000.0))
@@ -580,6 +639,22 @@ def run(args):
         print("Observed error reduction: {:.1f}mm".format(reduction * 1000.0))
         print("FK target error: {:.1f}mm".format(fk_target_error * 1000.0))
         print("Obstacle ratio after: {:.3f}".format(after["obstacle_ratio"]))
+        print(
+            "Target-to-finger segment: {:.1f}mm -> {:.1f}mm".format(
+                before["segment_distance"] * 1000.0,
+                after["segment_distance"] * 1000.0,
+            )
+        )
+        print(
+            "Gripper-axis change: {:.1f}deg; axis-to-target error after: {:.1f}deg".format(
+                axis_change, axis_error_after
+            )
+        )
+        print("Observed wrist-sensor motion (diagnostic only): {:.1f}deg".format(actual_wrist_motion))
+        failed_after = [
+            name for name, passed in after["gate_checks"].items() if not passed
+        ]
+        print("Preclose conditions still failing after step:", failed_after)
         print(
             "Head identity after: spread={:.4f}m identity_error={:.4f}m checks={}".format(
                 head_after["base_spread"],
@@ -639,6 +714,9 @@ def build_parser():
     parser.add_argument("--maximum-ik-iterations", type=int, default=35)
     parser.add_argument("--maximum-baseline-drift-deg", type=float, default=0.15)
     parser.add_argument("--maximum-uncommanded-motion-deg", type=float, default=1.5)
+    parser.add_argument("--maximum-axis-change-deg", type=float, default=12.0)
+    parser.add_argument("--maximum-finger-gap-change", type=float, default=0.010)
+    parser.add_argument("--maximum-segment-worsening", type=float, default=0.005)
     parser.add_argument("--motion-seconds", type=float, default=4.0)
     parser.add_argument("--settle-seconds", type=float, default=1.0)
     parser.add_argument("--vision-settle-seconds", type=float, default=1.0)
