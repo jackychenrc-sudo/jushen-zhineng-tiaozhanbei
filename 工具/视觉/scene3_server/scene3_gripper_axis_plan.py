@@ -393,13 +393,13 @@ def run_ros(args):
             plan["target_odom_xyz"] = target_odom.tolist()
         rospy.set_param(PLAN_PARAM, plan)
         print("GRIPPER_AXIS_5DEG_PLAN_OK")
-        print("鏂规宸蹭繚瀛橈紱浠嶆湭鍙戦€佷换浣曟帶鍒跺懡浠?)
+        print("Plan saved; no base, arm or claw command was sent")
         return 0
 
     if rospy.has_param(PLAN_PARAM):
         rospy.delete_param(PLAN_PARAM)
     print("GRIPPER_AXIS_PLAN_BLOCKED")
-    print("鏈繚瀛樻柟妗堬紱鏈彂閫佷换浣曟帶鍒跺懡浠?)
+    print("No base, arm or claw command was sent")
     return 2
 
 
