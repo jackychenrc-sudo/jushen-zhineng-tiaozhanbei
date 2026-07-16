@@ -100,6 +100,11 @@ def build_parser():
     parser.add_argument("--maximum-target-change", type=float, default=0.020)
     parser.add_argument("--minimum-error-reduction", type=float, default=1.5)
     parser.add_argument("--maximum-tcp-shift", type=float, default=0.015)
+    parser.add_argument("--tracking-correction-trigger-deg", type=float, default=1.0)
+    parser.add_argument("--maximum-pre-correction-error-deg", type=float, default=3.5)
+    parser.add_argument("--maximum-tracking-correction-deg", type=float, default=2.5)
+    parser.add_argument("--tracking-correction-gain", type=float, default=0.8)
+    parser.add_argument("--tracking-correction-seconds", type=float, default=2.5)
     parser.add_argument("--timeout", type=float, default=8.0)
     return parser
 
@@ -383,6 +388,52 @@ def run_ros(args):
         hold_reference(target_reference, args.settle_seconds)
 
         after_arm = sample_arm()
+        first_actual_delta = [
+            math.degrees(after_arm[index] - current_arm[index])
+            for index in range(7, 14)
+        ]
+        first_tracking_vector = [
+            math.degrees(target_arm[index] - after_arm[index])
+            for index in range(7, 14)
+        ]
+        first_tracking_error = maximum_abs(first_tracking_vector)
+        print("First-pass actual right-arm delta: {}deg".format(
+            [round(value, 3) for value in first_actual_delta]
+        ))
+        print("First-pass right-arm tracking residual: {}deg".format(
+            [round(value, 3) for value in first_tracking_vector]
+        ))
+
+        final_reference = list(target_reference)
+        if first_tracking_error > args.tracking_correction_trigger_deg:
+            if first_tracking_error > args.maximum_pre_correction_error_deg:
+                raise RuntimeError(
+                    "right-arm tracking residual is too large for bounded correction"
+                )
+            correction = [
+                max(
+                    -float(args.maximum_tracking_correction_deg),
+                    min(
+                        float(args.maximum_tracking_correction_deg),
+                        float(args.tracking_correction_gain) * residual,
+                    ),
+                )
+                for residual in first_tracking_vector
+            ]
+            final_reference[0:7] = list(source_reference[0:7])
+            for index in range(7):
+                final_reference[7 + index] += correction[index]
+            print("Applying one bounded tracking correction: {}deg".format(
+                [round(value, 3) for value in correction]
+            ))
+            move_reference(
+                target_reference,
+                final_reference,
+                args.tracking_correction_seconds,
+            )
+            hold_reference(final_reference, args.settle_seconds)
+            after_arm = sample_arm()
+
         after_poses = call_fk(after_arm)
         after_eef_position = [
             float(value) for value in after_poses.right_pose.pos_xyz
@@ -411,6 +462,14 @@ def run_ros(args):
             math.degrees(after_arm[index] - target_arm[index])
             for index in range(7, 14)
         ])
+        final_actual_delta = [
+            math.degrees(after_arm[index] - current_arm[index])
+            for index in range(7, 14)
+        ]
+        final_tracking_vector = [
+            math.degrees(target_arm[index] - after_arm[index])
+            for index in range(7, 14)
+        ]
         tray_vector = current_tray - after_geometry["tcp"]
         tray_standoff = float(np.dot(
             tray_vector, desired_physical_rotation[:, 0]
@@ -430,6 +489,12 @@ def run_ros(args):
 
         print("Physical TCP after: {}".format(
             np.round(after_geometry["tcp"], 4).tolist()
+        ))
+        print("Final actual right-arm delta: {}deg".format(
+            [round(value, 3) for value in final_actual_delta]
+        ))
+        print("Final right-arm tracking residual: {}deg".format(
+            [round(value, 3) for value in final_tracking_vector]
         ))
         print("Physical forward after: {}".format(
             np.round(after_geometry["forward"], 4).tolist()
