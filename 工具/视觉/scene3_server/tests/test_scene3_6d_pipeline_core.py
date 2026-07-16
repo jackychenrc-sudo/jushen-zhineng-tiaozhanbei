@@ -61,6 +61,22 @@ class Scene36DPipelineCoreTest(unittest.TestCase):
             atol=1e-12,
         )
 
+    def test_regression_wrist_command_uses_delta_not_measured_absolute(self):
+        # Real failure signature: command=49.423deg, measured=63.906deg.
+        # Asking IK for +1deg must command 50.423deg, never 64.906deg.
+        reference = np.zeros(14)
+        reference[11] = 49.423
+        measured = np.zeros(14)
+        measured[11] = np.deg2rad(63.906)
+        solved = measured.copy()
+        solved[11] += np.deg2rad(1.0)
+        target, delta = command_target_from_ik_delta(
+            reference, measured, solved
+        )
+        self.assertAlmostEqual(delta[11], 1.0, places=9)
+        self.assertAlmostEqual(target[11], 50.423, places=9)
+        self.assertNotAlmostEqual(target[11], 64.906, places=3)
+
     def test_grasp_targets_share_one_straight_approach_line(self):
         result = compute_grasp_targets(
             [0.60, -0.20, 0.25],
@@ -150,4 +166,3 @@ class Scene36DPipelineCoreTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
