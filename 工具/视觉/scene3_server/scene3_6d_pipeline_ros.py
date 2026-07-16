@@ -51,12 +51,7 @@ LOCKED_ODOM_PARAM = (
     "/challenge_cup_task_template/scene3/locked_target_odom_xyz"
 )
 
-ARM_NAMES = [
-    "l_arm_pitch", "l_arm_roll", "l_arm_yaw", "l_forearm_pitch",
-    "l_hand_yaw", "l_hand_pitch", "l_hand_roll",
-    "r_arm_pitch", "r_arm_roll", "r_arm_yaw", "r_forearm_pitch",
-    "r_hand_yaw", "r_hand_pitch", "r_hand_roll",
-]
+ARM_NAMES = ["arm_joint_{}".format(index) for index in range(1, 15)]
 
 
 def maximum_abs(values):
@@ -614,4 +609,3 @@ class Scene36DRosController(object):
                 self.rollback(source)
             print("{}_BLOCKED: rolled back".format(label))
             return False, None
-
