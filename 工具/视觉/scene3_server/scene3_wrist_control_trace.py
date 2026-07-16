@@ -235,19 +235,42 @@ def run_ros(args):
             ))
 
     def load_normal_ruiwo_gains():
-        service_name = "/humanoid_controller/change_ruiwo_motor_param"
-        rospy.wait_for_service(service_name, timeout=float(args.timeout))
-        proxy = rospy.ServiceProxy(service_name, ExecuteArmAction)
+        # The current controller advertises the first name.  Older Kuavo
+        # runtimes expose the same ExecuteArmAction API from hardware instead.
+        service_names = [
+            "/humanoid_controller/change_ruiwo_motor_param",
+            "/hardware/change_ruiwo_motor_param",
+            "/change_ruiwo_motor_param",
+        ]
+        available_service = None
+        for service_name in service_names:
+            try:
+                rospy.wait_for_service(service_name, timeout=1.0)
+                available_service = service_name
+                break
+            except rospy.ROSException:
+                continue
+        if available_service is None:
+            raise RuntimeError(
+                "no Ruiwo gain service found; checked {}".format(
+                    service_names
+                )
+            )
+
+        proxy = rospy.ServiceProxy(available_service, ExecuteArmAction)
         request = ExecuteArmActionRequest()
         request.action_name = "normal_kpkd"
         response = proxy(request)
         if not getattr(response, "success", False):
             raise RuntimeError(
-                "normal Ruiwo gain service failed: {}".format(
-                    getattr(response, "message", "")
+                "normal Ruiwo gain service {} failed: {}".format(
+                    available_service,
+                    getattr(response, "message", ""),
                 )
             )
-        print("Loaded official normal_kpkd Ruiwo gains")
+        print("Loaded official normal_kpkd Ruiwo gains via {}".format(
+            available_service
+        ))
 
     def low_level_reference_error(low_level_radians, command_degrees):
         return maximum_abs([
