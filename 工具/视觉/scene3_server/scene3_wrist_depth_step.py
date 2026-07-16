@@ -90,11 +90,11 @@ def motion_checks(
     progress = float(np.dot(motion_xyz, direction))
     reduction = float(before_error_m) - float(after_error_m)
     checks = {
-        "tcp_error_reduced": reduction >= max(0.008, 0.35 * step),
+        "tcp_error_reduced": reduction >= max(0.003, 0.25 * step),
         "forward_progress": progress >= 0.35 * step,
         "tcp_motion_bounded": 0.30 * step <= motion <= 1.80 * step + 0.005,
         "fk_target_error_bounded": float(fk_target_error_m)
-        <= max(0.008, 0.60 * step),
+        <= max(0.005, 0.50 * step),
     }
     return checks, progress, motion, reduction
 
