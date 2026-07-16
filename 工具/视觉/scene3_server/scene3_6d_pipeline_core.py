@@ -15,8 +15,6 @@ three-stage grasp geometry can be unit-tested on a development machine.
 
 from __future__ import print_function
 
-import math
-
 import numpy as np
 
 
@@ -293,4 +291,3 @@ def interpolate_commands(start_degrees, target_degrees, count):
         start + (target - start) * quintic(float(index) / float(count))
         for index in range(count + 1)
     ]
-
