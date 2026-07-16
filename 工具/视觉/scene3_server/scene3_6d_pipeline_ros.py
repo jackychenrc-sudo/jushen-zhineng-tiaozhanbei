@@ -9,7 +9,6 @@ and uses measured joints only to calculate an IK delta.
 
 from __future__ import print_function
 
-import math
 import statistics
 import time
 
