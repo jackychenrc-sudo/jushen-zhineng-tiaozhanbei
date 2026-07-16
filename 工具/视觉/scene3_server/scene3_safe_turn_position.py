@@ -151,7 +151,8 @@ def build_parser():
     parser.add_argument("--maximum-joint-step-deg", type=float, default=6.0)
     parser.add_argument("--maximum-ik-error", type=float, default=0.004)
     parser.add_argument("--maximum-ik-iterations", type=int, default=35)
-    parser.add_argument("--maximum-baseline-error-deg", type=float, default=1.5)
+    parser.add_argument("--maximum-baseline-error-deg", type=float, default=5.0)
+    parser.add_argument("--maximum-arm-drift-deg", type=float, default=0.15)
     parser.add_argument("--maximum-left-drift-deg", type=float, default=0.35)
     parser.add_argument("--maximum-wrist-drift-deg", type=float, default=0.35)
     parser.add_argument("--maximum-vision-spread", type=float, default=0.02)
@@ -212,11 +213,16 @@ def run_ros(args):
             arm, mapping = extract_arm_joints(message)
             samples.append([float(value) for value in arm])
             rospy.sleep(0.06)
-        median = [
+        median = np.asarray([
             statistics.median(row[index] for row in samples)
             for index in range(14)
-        ]
-        return np.asarray(median, dtype=float), mapping
+        ], dtype=float)
+        maximum_drift = max(
+            abs(math.degrees(row[index] - median[index]))
+            for row in samples
+            for index in range(14)
+        )
+        return median, mapping, maximum_drift
 
     def frame_xyz(frame_name):
         transform = tf_buffer.lookup_transform(
@@ -416,7 +422,7 @@ def run_ros(args):
 
     segment_limit = int(args.max_segments) if execute else 1
     for segment_index in range(1, segment_limit + 1):
-        current_arm, mapping = sample_arm()
+        current_arm, mapping, arm_drift = sample_arm()
         current_poses = call_fk(current_arm)
         geometry = physical_geometry()
         current_tcp = np.asarray(geometry["tcp"], dtype=float)
@@ -425,6 +431,9 @@ def run_ros(args):
             abs(math.degrees(current_arm[index]) - reference[index])
             for index in range(14)
         )
+        measured_reference = [
+            math.degrees(value) for value in current_arm
+        ]
 
         print("\n=== Safe-turn segment {} / {} ===".format(
             segment_index, segment_limit
@@ -447,6 +456,9 @@ def run_ros(args):
         print("Command-reference baseline error: {:.3f}deg".format(
             baseline_error
         ))
+        print("Measured arm drift during sampling: {:.3f}deg".format(
+            arm_drift
+        ))
         print(
             "Vision: base={} spread={:.4f}m identity_error={:.4f}m checks={}".format(
                 np.round(observation["base"], 4).tolist(),
@@ -455,12 +467,27 @@ def run_ros(args):
                 observation["checks"],
             )
         )
+        if arm_drift > args.maximum_arm_drift_deg:
+            print("SAFE_TURN_POSITION_BLOCKED: measured arm is still moving")
+            return 2
         if baseline_error > args.maximum_baseline_error_deg:
             print("SAFE_TURN_POSITION_BLOCKED: stale arm command reference")
             return 2
         if not all(observation["checks"].values()):
             print("SAFE_TURN_POSITION_BLOCKED: tray vision gate failed")
             return 2
+
+        # Begin every segment from the measured, stable arm pose.  This avoids
+        # accumulating normal controller tracking residual in the command
+        # reference over a long sequence of short Cartesian steps.
+        reference = list(measured_reference)
+        if execute:
+            rospy.set_param(REFERENCE_PARAM, reference)
+        if baseline_error > 0.05:
+            print(
+                "COMMAND_REFERENCE_REBASED_TO_STABLE_MEASUREMENT: "
+                "{:.3f}deg".format(baseline_error)
+            )
 
         selected, remaining = plan_segment(
             current_arm, current_tcp, current_poses
@@ -507,7 +534,7 @@ def run_ros(args):
                 args.motion_seconds,
             )
             hold_reference(selected["target_reference"], args.settle_seconds)
-            after_arm, _ = sample_arm()
+            after_arm, _, after_arm_drift = sample_arm()
             rospy.sleep(0.25)
             after_tcp = np.asarray(physical_geometry()["tcp"], dtype=float)
             metrics = cartesian_metrics(
@@ -531,6 +558,9 @@ def run_ros(args):
             checks["wrist_continuous"] = (
                 wrist_drift <= args.maximum_wrist_drift_deg
             )
+            checks["arm_settled"] = (
+                after_arm_drift <= args.maximum_arm_drift_deg
+            )
             rospy.sleep(args.vision_settle_seconds)
             after_observation = observe_tray()
             checks["same_tray"] = all(
@@ -547,8 +577,9 @@ def run_ros(args):
                 metrics["cross_track"],
                 metrics["target_error"],
             ))
-            print("Left drift: {:.3f}deg  wrist drift: {:.3f}deg".format(
-                left_drift, wrist_drift
+            print("Left drift: {:.3f}deg  wrist drift: {:.3f}deg  "
+                  "settling drift: {:.3f}deg".format(
+                left_drift, wrist_drift, after_arm_drift
             ))
             print("Post-motion checks: {}".format(checks))
             if not all(checks.values()):
