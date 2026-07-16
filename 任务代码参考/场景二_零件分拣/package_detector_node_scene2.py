@@ -306,7 +306,27 @@ class DetectObjectsNode:
 
                 pose = Pose()
                 pose.position = base_point.point
-                pose.orientation.w = 1.0
+
+                # Estimate part surface yaw from depth patch
+                try:
+                    yaw = self._estimate_grasp_yaw(
+                        u, v, cv_depth, info,
+                        bbox_width=float(x2 - x1),
+                        bbox_height=float(y2 - y1),
+                    )
+                except Exception as e:
+                    rospy.logwarn("Yaw estimation failed: %s", e)
+                    yaw = None
+
+                if yaw is not None:
+                    qx, qy, qz, qw = self._quaternion_from_yaw(yaw)
+                    pose.orientation.x = qx
+                    pose.orientation.y = qy
+                    pose.orientation.z = qz
+                    pose.orientation.w = qw
+                else:
+                    pose.orientation.w = 1.0
+
                 detections_3d.append((label, conf, pose))
 
                 self._draw_detection(annotated, x1, y1, x2, y2, conf, label)
@@ -351,6 +371,242 @@ class DetectObjectsNode:
             img, text, (pt1[0] + 2, pt1[1] - 4),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA,
         )
+
+    # ------------------------------------------------------------------
+    #  Based on depth image to estimate part surface yaw angle
+    # ------------------------------------------------------------------
+    def _estimate_grasp_yaw(self, box_center_u, box_center_v, depth_image, camera_info,
+                            bbox_width=None, bbox_height=None, patch_scale=1.5):
+        """
+        Estimate part surface orientation (yaw angle) from local depth point cloud.
+
+        Pipeline:
+          1. Extract local depth patch centered on the detection box.
+          2. Back-project valid pixels to camera coordinate system.
+          3. Statistical outlier removal.
+          4. RANSAC (preferred) or least-squares plane fitting.
+          5. Transform normal vector to target frame and compute yaw on XOY plane.
+
+        Args:
+            box_center_u, box_center_v: Pixel coordinates of box center.
+            depth_image: Decoded depth image (HxW, float32, meters).
+            camera_info: CameraInfo message with intrinsics.
+            bbox_width, bbox_height: Bounding box size in pixels.
+            patch_scale: Expansion factor for local patch, default 1.5.
+
+        Returns:
+            float: yaw angle (radians) in [-pi, pi], or None on failure.
+        """
+        import math
+
+        H, W = depth_image.shape[:2]
+        K = camera_info.K
+        fx, fy = K[0], K[4]
+        cx, cy = K[2], K[5]
+
+        # ---- 1. Determine local patch boundaries ----
+        if bbox_width is not None and bbox_height is not None and bbox_width > 0 and bbox_height > 0:
+            half_size = patch_scale * max(bbox_width, bbox_height) / 2.0
+        else:
+            half_size = 30.0
+
+        u_min = max(0, int(round(box_center_u - half_size)))
+        u_max = min(W, int(round(box_center_u + half_size)))
+        v_min = max(0, int(round(box_center_v - half_size)))
+        v_max = min(H, int(round(box_center_v + half_size)))
+
+        patch = depth_image[v_min:v_max, u_min:u_max]
+        patch_h, patch_w = patch.shape
+        if patch_h < 5 or patch_w < 5:
+            rospy.logdebug("Depth patch too small (%dx%d), cannot estimate yaw", patch_w, patch_h)
+            return None
+
+        # ---- 2. Generate local point cloud (camera frame) ----
+        v_grid, u_grid = np.mgrid[v_min:v_max, u_min:u_max]
+        valid = (patch > 0.005) & np.isfinite(patch)
+        n_valid = np.count_nonzero(valid)
+        if n_valid < 20:
+            rospy.logdebug("Too few valid depth points (%d) in patch", n_valid)
+            return None
+
+        u_pts = u_grid[valid].astype(np.float32)
+        v_pts = v_grid[valid].astype(np.float32)
+        d_pts = patch[valid].astype(np.float32)
+
+        x_cam = (u_pts - cx) * d_pts / fx
+        y_cam = (v_pts - cy) * d_pts / fy
+        z_cam = d_pts
+        points = np.column_stack((x_cam, y_cam, z_cam))
+
+        # ---- 3. Statistical outlier removal ----
+        center = np.mean(points, axis=0)
+        dists = np.linalg.norm(points - center, axis=1)
+        mean_dist = np.mean(dists)
+        std_dist = np.std(dists)
+        if std_dist > 1e-8:
+            inlier_mask = dists <= (mean_dist + 2.0 * std_dist)
+            points = points[inlier_mask]
+
+        if points.shape[0] < 20:
+            rospy.logdebug("After outlier removal, only %d points remain", points.shape[0])
+            return None
+
+        # ---- 4. Plane fitting (RANSAC first, least-squares fallback) ----
+        normal = self._fit_plane_ransac(points)
+        if normal is None:
+            normal = self._fit_plane_lstsq(points)
+        if normal is None:
+            rospy.logwarn("Plane fitting failed entirely")
+            return None
+
+        # ---- 5. Transform normal to target frame and compute yaw ----
+        normal = self._normal_to_target_frame(normal, camera_info)
+        if normal is None:
+            return None
+
+        proj = np.array([normal[0], normal[1], 0.0])
+        proj_norm = np.linalg.norm(proj)
+        if proj_norm < 1e-6:
+            return 0.0
+
+        proj = proj / proj_norm
+        dot = max(-1.0, min(1.0, proj[0]))
+        yaw = math.acos(dot)
+        if proj[1] < 0:
+            yaw = -yaw
+        return yaw
+
+    # ------------------------------------------------------------------
+    #  RANSAC plane fitting (sklearn preferred, custom fallback)
+    # ------------------------------------------------------------------
+    def _fit_plane_ransac(self, points, max_trials=200, threshold=0.01, min_inlier_ratio=0.4):
+        """Fit a plane using RANSAC: ax + by + cz + d = 0.
+        Returns normalized normal (a, b, c) or None."""
+        try:
+            from sklearn.linear_model import RANSACRegressor
+            Xy = points[:, :2]
+            z = points[:, 2]
+            ransac = RANSACRegressor(
+                min_samples=3,
+                residual_threshold=threshold,
+                max_trials=max_trials,
+                random_state=42,
+            )
+            ransac.fit(Xy, z)
+            a, b = ransac.estimator_.coef_
+            d = ransac.estimator_.intercept_
+            normal_full = np.array([a, b, -1.0, d], dtype=np.float64)
+        except ImportError:
+            normal_full = self._ransac_custom(points, max_trials, threshold, min_inlier_ratio)
+        except Exception:
+            normal_full = self._ransac_custom(points, max_trials, threshold, min_inlier_ratio)
+
+        if normal_full is None:
+            return None
+        a, b, c, _d = normal_full
+        norm_len = math.sqrt(a*a + b*b + c*c)
+        if norm_len < 1e-12:
+            return None
+        return np.array([a, b, c]) / norm_len
+
+    # ------------------------------------------------------------------
+    #  Custom RANSAC plane fitting (no sklearn dependency)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _ransac_custom(points, max_trials=200, threshold=0.01, min_inlier_ratio=0.4):
+        """Custom RANSAC plane fitting.
+        Returns (a, b, c, d) or None."""
+        N = points.shape[0]
+        if N < 3:
+            return None
+
+        rng = np.random.RandomState(42)
+        best_inliers = None
+        best_count = 0
+
+        for _ in range(max_trials):
+            idx = rng.choice(N, 3, replace=False)
+            p1, p2, p3 = points[idx]
+            v1 = p2 - p1
+            v2 = p3 - p1
+            n_vec = np.cross(v1, v2)
+            n_len = np.linalg.norm(n_vec)
+            if n_len < 1e-12:
+                continue
+            n_vec = n_vec / n_len
+            d_val = -np.dot(n_vec, p1)
+            dists = np.abs(points @ n_vec + d_val)
+            inlier_mask = dists < threshold
+            n_inliers = np.count_nonzero(inlier_mask)
+            if n_inliers > best_count:
+                best_count = n_inliers
+                best_inliers = inlier_mask
+                if n_inliers >= min_inlier_ratio * N:
+                    break
+
+        if best_inliers is None or best_count < 20:
+            return None
+
+        inlier_pts = points[best_inliers]
+        centroid = np.mean(inlier_pts, axis=0)
+        _, _, Vt = np.linalg.svd(inlier_pts - centroid, full_matrices=False)
+        refined_normal = Vt[2, :]
+        refined_d = -np.dot(refined_normal, centroid)
+        return np.array([refined_normal[0], refined_normal[1], refined_normal[2], refined_d])
+
+    # ------------------------------------------------------------------
+    #  Least-squares plane fitting (fallback)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _fit_plane_lstsq(points):
+        """Fit plane via SVD. Returns normalized normal (a,b,c) or None."""
+        if points.shape[0] < 3:
+            return None
+        centroid = np.mean(points, axis=0)
+        _, _, Vt = np.linalg.svd(points - centroid, full_matrices=False)
+        normal = Vt[2, :]
+        norm_len = np.linalg.norm(normal)
+        if norm_len < 1e-12:
+            return None
+        return normal / norm_len
+
+    # ------------------------------------------------------------------
+    #  Transform normal vector from camera frame to target frame
+    # ------------------------------------------------------------------
+    def _normal_to_target_frame(self, normal, camera_info, target_frame="base_link"):
+        """Rotate normal from camera frame to target_frame via TF."""
+        from geometry_msgs.msg import Vector3Stamped
+
+        vec_msg = Vector3Stamped()
+        vec_msg.header.frame_id = camera_info.header.frame_id or "cam_h"
+        vec_msg.header.stamp = rospy.Time(0)
+        vec_msg.vector.x = float(normal[0])
+        vec_msg.vector.y = float(normal[1])
+        vec_msg.vector.z = float(normal[2])
+
+        try:
+            transformed = self.tf_buffer.transform(
+                vec_msg, target_frame, rospy.Duration(0.1)
+            )
+        except Exception as e:
+            rospy.logwarn("Normal vector TF transform failed: %s", e)
+            return None
+
+        return np.array([
+            transformed.vector.x,
+            transformed.vector.y,
+            transformed.vector.z,
+        ])
+
+    # ------------------------------------------------------------------
+    #  Helper: quaternion from yaw (rotation about Z)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _quaternion_from_yaw(yaw):
+        """Generate quaternion (x, y, z, w) from yaw (rotation about Z)."""
+        half_yaw = yaw / 2.0
+        return (0.0, 0.0, math.sin(half_yaw), math.cos(half_yaw))
+
 
     def _publish_debug_image(self, img):
         """将标注后的 BGR 图像以 JPEG 压缩后发布。"""
