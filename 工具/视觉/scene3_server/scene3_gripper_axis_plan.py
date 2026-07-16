@@ -20,6 +20,9 @@ RIGHT_PROXIMAL_INDICES = (7, 8, 9, 10)
 RIGHT_WRIST_INDICES = (11, 12, 13)
 PLAN_PARAM = "/challenge_cup_task_template/scene3/gripper_axis_plan"
 TARGET_PARAM = "/challenge_cup_task_template/scene3/locked_target_base_xyz"
+WRIST_TARGET_ODOM_PARAM = (
+    "/challenge_cup_task_template/scene3/wrist_target_odom_xyz"
+)
 
 GLOBAL_LOWER = np.deg2rad(np.array([-180.0, -120.0, -90.0, -120.0]))
 GLOBAL_UPPER = np.deg2rad(np.array([40.0, 60.0, 90.0, 0.0]))
@@ -47,6 +50,17 @@ def quaternion_to_matrix(quaternion_xyzw):
 def angle_degrees(first, second):
     dot = float(np.clip(np.dot(normalize(first), normalize(second)), -1.0, 1.0))
     return math.degrees(math.acos(dot))
+
+
+def target_axis_standoff(target, midpoint, axis):
+    """Signed target distance along the physical gripper forward axis."""
+
+    return float(
+        np.dot(
+            np.asarray(target, dtype=float) - np.asarray(midpoint, dtype=float),
+            normalize(axis, "gripper_axis"),
+        )
+    )
 
 
 def step_axis_toward(current_axis, goal_axis, maximum_step_degrees):
@@ -231,6 +245,7 @@ def solve_axis_step(
 def run_ros(args):
     import rospy
     import tf2_ros
+    from geometry_msgs.msg import PointStamped
     from kuavo_msgs.msg import sensorsData
     from kuavo_msgs.srv import fkSrv
 
@@ -246,6 +261,25 @@ def run_ros(args):
         translation = transform.transform.translation
         return np.array([translation.x, translation.y, translation.z], dtype=float)
 
+    def point_in_base(xyz, source_frame):
+        point = PointStamped()
+        point.header.frame_id = str(source_frame)
+        point.header.stamp = rospy.Time(0)
+        point.point.x = float(xyz[0])
+        point.point.y = float(xyz[1])
+        point.point.z = float(xyz[2])
+        transformed = tf_buffer.transform(
+            point, "base_link", rospy.Duration(3.0)
+        )
+        return np.array(
+            [
+                transformed.point.x,
+                transformed.point.y,
+                transformed.point.z,
+            ],
+            dtype=float,
+        )
+
     samples = []
     for _ in range(5):
         message = rospy.wait_for_message(
@@ -260,7 +294,18 @@ def run_ros(args):
     right_finger = frame_xyz("right_gripper_right_inner_finger")
     midpoint = 0.5 * (left_finger + right_finger)
     actual_axis = normalize(midpoint - gripper_base, "gripper_axis")
-    tray = np.asarray(rospy.get_param(TARGET_PARAM), dtype=float)
+    target_odom = None
+    if args.target_source == "wrist":
+        target_odom = np.asarray(
+            rospy.get_param(args.wrist_target_odom_param), dtype=float
+        )
+        if target_odom.shape != (3,) or not np.all(np.isfinite(target_odom)):
+            raise RuntimeError("saved wrist target odom coordinate is invalid")
+        tray = point_in_base(target_odom, "odom")
+        target_label = "fixed wrist target in odom"
+    else:
+        tray = np.asarray(rospy.get_param(TARGET_PARAM), dtype=float)
+        target_label = "head-camera tray target in base_link"
 
     rospy.wait_for_service("/ik/fk_srv", timeout=float(args.timeout))
     fk_proxy = rospy.ServiceProxy("/ik/fk_srv", fkSrv, persistent=True)
@@ -290,33 +335,48 @@ def run_ros(args):
     delta_deg = np.rad2deg(result["joint_delta_rad"])
     midpoint_shift = result["midpoint_shift_m"]
     remaining_x = float(tray[0] - result["predicted_midpoint"][0])
+    predicted_axis_standoff = target_axis_standoff(
+        tray,
+        result["predicted_midpoint"],
+        result["predicted_axis"],
+    )
+    if args.target_source == "wrist":
+        target_ahead = predicted_axis_standoff >= args.minimum_axis_standoff
+    else:
+        target_ahead = remaining_x >= args.minimum_x_standoff
     checks = {
         "left_arm_frozen": float(np.max(np.abs(delta_deg[:7]))) < 1e-6,
         "wrist_frozen": float(np.max(np.abs(delta_deg[11:14]))) < 1e-6,
         "joint_delta_bounded": float(np.max(np.abs(delta_deg[7:11]))) <= args.maximum_joint_delta + 1e-6,
         "axis_improved": result["axis_reduction_deg"] >= args.minimum_axis_reduction,
         "midpoint_bounded": midpoint_shift <= args.maximum_midpoint_shift,
-        "tray_still_ahead": remaining_x >= args.minimum_x_standoff,
+        "target_still_ahead": target_ahead,
         "values_finite": bool(np.all(np.isfinite(delta_deg))),
     }
 
-    print("料盘抓取点:", np.round(tray, 4).tolist())
-    print("当前内侧手指中点:", np.round(midpoint, 4).tolist())
-    print("当前夹爪轴:", np.round(actual_axis, 4).tolist())
-    print("当前夹爪朝向误差: {:.2f}deg".format(result["before_axis_error_deg"]))
-    print("本次只规划纠正: {:.2f}deg".format(result["planned_axis_step_deg"]))
-    print("右肩肘计划增量:", np.round(delta_deg[7:11], 3).tolist())
-    print("腕部计划增量:", np.round(delta_deg[11:14], 6).tolist())
-    print("左臂最大计划增量: {:.6f}deg".format(float(np.max(np.abs(delta_deg[:7])))))
-    print("预测手指中点:", np.round(result["predicted_midpoint"], 4).tolist())
-    print("预测夹爪轴:", np.round(result["predicted_axis"], 4).tolist())
-    print("预测中点移动: {:.1f}mm".format(midpoint_shift * 1000.0))
-    print("预测夹爪朝向误差: {:.2f}deg -> {:.2f}deg".format(
+    print("鐩爣鏉ユ簮:", target_label)
+    if target_odom is not None:
+        print("鍥哄畾鑵曢儴鐩爣odom:", np.round(target_odom, 4).tolist())
+    print("鏂欑洏鎶撳彇鐐?", np.round(tray, 4).tolist())
+    print("褰撳墠鍐呬晶鎵嬫寚涓偣:", np.round(midpoint, 4).tolist())
+    print("褰撳墠澶圭埅杞?", np.round(actual_axis, 4).tolist())
+    print("褰撳墠澶圭埅鏈濆悜璇樊: {:.2f}deg".format(result["before_axis_error_deg"]))
+    print("鏈鍙鍒掔籂姝? {:.2f}deg".format(result["planned_axis_step_deg"]))
+    print("鍙宠偐鑲樿鍒掑閲?", np.round(delta_deg[7:11], 3).tolist())
+    print("鑵曢儴璁″垝澧為噺:", np.round(delta_deg[11:14], 6).tolist())
+    print("宸﹁噦鏈€澶ц鍒掑閲? {:.6f}deg".format(float(np.max(np.abs(delta_deg[:7])))))
+    print("棰勬祴鎵嬫寚涓偣:", np.round(result["predicted_midpoint"], 4).tolist())
+    print("棰勬祴澶圭埅杞?", np.round(result["predicted_axis"], 4).tolist())
+    print("棰勬祴涓偣绉诲姩: {:.1f}mm".format(midpoint_shift * 1000.0))
+    print("棰勬祴澶圭埅鏈濆悜璇樊: {:.2f}deg -> {:.2f}deg".format(
         result["before_axis_error_deg"], result["after_axis_error_deg"]
     ))
-    print("预测改善: {:.2f}deg".format(result["axis_reduction_deg"]))
-    print("预测中点距料盘X方向仍有: {:.1f}mm".format(remaining_x * 1000.0))
-    print("安全检查:", checks)
+    print("棰勬祴鏀瑰杽: {:.2f}deg".format(result["axis_reduction_deg"]))
+    print("棰勬祴涓偣璺濇枡鐩榅鏂瑰悜浠嶆湁: {:.1f}mm".format(remaining_x * 1000.0))
+    print("棰勬祴鐩爣娌垮す鐖酱浠嶅湪鍓嶆柟: {:.1f}mm".format(
+        predicted_axis_standoff * 1000.0
+    ))
+    print("瀹夊叏妫€鏌?", checks)
 
     if all(checks.values()):
         plan = {
@@ -326,22 +386,36 @@ def run_ros(args):
             "predicted_axis_error_deg": float(result["after_axis_error_deg"]),
             "predicted_midpoint": result["predicted_midpoint"].tolist(),
             "tray_xyz": tray.tolist(),
+            "target_source": str(args.target_source),
+            "target_axis_standoff_m": float(predicted_axis_standoff),
         }
+        if target_odom is not None:
+            plan["target_odom_xyz"] = target_odom.tolist()
         rospy.set_param(PLAN_PARAM, plan)
         print("GRIPPER_AXIS_5DEG_PLAN_OK")
-        print("方案已保存；仍未发送任何控制命令")
+        print("鏂规宸蹭繚瀛橈紱浠嶆湭鍙戦€佷换浣曟帶鍒跺懡浠?)
         return 0
 
     if rospy.has_param(PLAN_PARAM):
         rospy.delete_param(PLAN_PARAM)
     print("GRIPPER_AXIS_PLAN_BLOCKED")
-    print("未保存方案；未发送任何控制命令")
+    print("鏈繚瀛樻柟妗堬紱鏈彂閫佷换浣曟帶鍒跺懡浠?)
     return 2
 
 
 def build_parser():
     parser = argparse.ArgumentParser(
         description="Plan one fixed-wrist Scene3 gripper-axis correction; no commands"
+    )
+    parser.add_argument(
+        "--target-source",
+        choices=("head", "wrist"),
+        default="head",
+        help="align to the head target or the fixed wrist-depth odom point",
+    )
+    parser.add_argument(
+        "--wrist-target-odom-param",
+        default=WRIST_TARGET_ODOM_PARAM,
     )
     parser.add_argument("--maximum-axis-step", type=float, default=5.0)
     parser.add_argument("--maximum-joint-delta", type=float, default=8.0)
@@ -350,6 +424,7 @@ def build_parser():
     parser.add_argument("--minimum-axis-reduction", type=float, default=2.5)
     parser.add_argument("--maximum-midpoint-shift", type=float, default=0.020)
     parser.add_argument("--minimum-x-standoff", type=float, default=0.100)
+    parser.add_argument("--minimum-axis-standoff", type=float, default=0.005)
     parser.add_argument("--timeout", type=float, default=5.0)
     return parser
 
@@ -360,4 +435,5 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
