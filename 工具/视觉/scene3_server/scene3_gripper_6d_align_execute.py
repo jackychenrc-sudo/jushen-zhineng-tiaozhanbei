@@ -107,6 +107,7 @@ def build_parser():
 def run_ros(args):
     import rospy
     import tf2_ros
+    import tf2_geometry_msgs  # noqa: F401 - registers PointStamped transforms
     from kuavo_msgs.msg import sensorsData
     from geometry_msgs.msg import PointStamped
     from kuavo_msgs.srv import (
