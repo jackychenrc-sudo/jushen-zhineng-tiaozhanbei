@@ -37,6 +37,9 @@ from scene3_6d_pose_dry_run import (
 
 PLAN_PARAM = "/challenge_cup_task_template/scene3/gripper_6d_align_plan"
 TARGET_PARAM = "/challenge_cup_task_template/scene3/locked_target_base_xyz"
+TARGET_ODOM_PARAM = (
+    "/challenge_cup_task_template/scene3/locked_target_odom_xyz"
+)
 GRIPPER_BASE_FRAME = "right_gripper_base"
 LEFT_FINGER_FRAME = "right_gripper_left_inner_knuckle"
 RIGHT_FINGER_FRAME = "right_gripper_right_inner_knuckle"
@@ -282,6 +285,7 @@ def build_parser():
 def run_ros(args):
     import rospy
     import tf2_ros
+    from geometry_msgs.msg import PointStamped
     from kuavo_msgs.msg import ikSolveParam, sensorsData, twoArmHandPoseCmd
     from kuavo_msgs.srv import fkSrv, twoArmHandPoseCmdSrv
 
@@ -299,14 +303,39 @@ def run_ros(args):
             [translation.x, translation.y, translation.z], dtype=float
         )
 
+    def point_in_base(xyz, source_frame):
+        point = PointStamped()
+        point.header.frame_id = str(source_frame)
+        point.header.stamp = rospy.Time(0)
+        point.point.x = float(xyz[0])
+        point.point.y = float(xyz[1])
+        point.point.z = float(xyz[2])
+        transformed = tf_buffer.transform(
+            point, "base_link", rospy.Duration(3.0)
+        )
+        return np.array([
+            transformed.point.x,
+            transformed.point.y,
+            transformed.point.z,
+        ], dtype=float)
+
     sensor = rospy.wait_for_message(
         "/sensors_data_raw", sensorsData, timeout=float(args.timeout)
     )
     current_arm, mapping = extract_arm_joints(sensor)
     current_arm = [float(value) for value in current_arm]
-    target_tray = np.asarray(rospy.get_param(TARGET_PARAM), dtype=float)
-    if target_tray.shape != (3,) or not np.all(np.isfinite(target_tray)):
-        raise RuntimeError("locked tray target is invalid")
+    target_tray_odom = np.asarray(
+        rospy.get_param(TARGET_ODOM_PARAM), dtype=float
+    )
+    if (
+        target_tray_odom.shape != (3,)
+        or not np.all(np.isfinite(target_tray_odom))
+    ):
+        raise RuntimeError("world-locked tray target is invalid")
+    target_tray = point_in_base(target_tray_odom, "odom")
+    local_edge = np.asarray(
+        rospy.get_param(TARGET_PARAM, target_tray.tolist()), dtype=float
+    )
 
     geometry = gripper_geometry(
         frame_xyz(GRIPPER_BASE_FRAME),
@@ -457,8 +486,14 @@ def run_ros(args):
     }
 
     print("Joint mapping: {}".format(mapping))
-    print("Locked tray base_link: {}".format(
+    print("World-locked tray center odom: {}".format(
+        np.round(target_tray_odom, 4).tolist()
+    ))
+    print("World-locked tray center base_link: {}".format(
         np.round(target_tray, 4).tolist()
+    ))
+    print("Separate local edge/prompt base_link: {}".format(
+        np.round(local_edge, 4).tolist()
     ))
     print("Physical TCP before: {}".format(
         np.round(geometry["tcp"], 4).tolist()
@@ -534,6 +569,7 @@ def run_ros(args):
         "predicted_physical_error_deg": float(predicted_error),
         "planned_orientation_step_deg": float(target["step_angle_deg"]),
         "target_tray_base_xyz": target_tray.tolist(),
+        "target_tray_odom_xyz": target_tray_odom.tolist(),
         "tcp_extension_m": float(args.tcp_extension),
         "up_sign": float(up_sign),
     })
