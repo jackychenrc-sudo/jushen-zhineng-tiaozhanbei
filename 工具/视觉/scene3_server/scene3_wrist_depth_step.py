@@ -100,6 +100,77 @@ def motion_checks(
     return checks, progress, motion, reduction
 
 
+def initial_edge_prompt(head_target_base, backoff_m=0.10):
+    """Move the head-camera tray point to the robot-facing tray edge.
+
+    The head detector reports a point on the tray body.  Near the shelf, that
+    point is commonly hidden from the wrist depth camera while the near edge
+    is visible between the fingers.  Backing off along the base-frame planar
+    line of sight produces a deterministic prompt for that visible edge.
+    """
+
+    head = np.asarray(head_target_base, dtype=float)
+    if head.shape != (3,) or not np.all(np.isfinite(head)):
+        raise ValueError("head tray target must be a finite xyz vector")
+    planar_norm = float(np.linalg.norm(head[:2]))
+    if planar_norm < 1e-6:
+        raise ValueError("head tray target is too close to define an approach ray")
+    if float(backoff_m) <= 0.0:
+        raise ValueError("initial edge backoff must be positive")
+
+    approach_unit = head[:2] / planar_norm
+    prompt = head.copy()
+    prompt[:2] -= float(backoff_m) * approach_unit
+    return prompt, approach_unit
+
+
+def initial_candidate_gate(
+    candidate_base,
+    head_target_base,
+    prompt_base,
+    approach_unit,
+    maximum_prompt_error_m=0.080,
+    minimum_edge_offset_m=0.030,
+    maximum_edge_offset_m=0.170,
+    maximum_lateral_offset_m=0.080,
+    maximum_height_error_m=0.060,
+):
+    """Verify that a first wrist-depth point is the near edge of this tray."""
+
+    candidate = np.asarray(candidate_base, dtype=float)
+    head = np.asarray(head_target_base, dtype=float)
+    prompt = np.asarray(prompt_base, dtype=float)
+    direction = np.asarray(approach_unit, dtype=float)
+    if any(value.shape != (3,) for value in (candidate, head, prompt)):
+        raise ValueError("initial candidate gate expects xyz vectors")
+    if direction.shape != (2,) or not np.all(np.isfinite(direction)):
+        raise ValueError("approach unit must be a finite xy vector")
+    if not all(np.all(np.isfinite(value)) for value in (candidate, head, prompt)):
+        raise ValueError("initial candidate gate received non-finite coordinates")
+
+    head_to_candidate_xy = head[:2] - candidate[:2]
+    edge_offset = float(np.dot(head_to_candidate_xy, direction))
+    lateral_vector = head_to_candidate_xy - edge_offset * direction
+    details = {
+        "prompt_error_m": distance(candidate, prompt),
+        "edge_offset_m": edge_offset,
+        "lateral_offset_m": float(np.linalg.norm(lateral_vector)),
+        "height_error_m": abs(float(candidate[2] - head[2])),
+    }
+    checks = {
+        "near_edge_prompt": details["prompt_error_m"]
+        <= float(maximum_prompt_error_m),
+        "robot_facing_edge": float(minimum_edge_offset_m)
+        <= details["edge_offset_m"]
+        <= float(maximum_edge_offset_m),
+        "lateral_consistency": details["lateral_offset_m"]
+        <= float(maximum_lateral_offset_m),
+        "height_consistency": details["height_error_m"]
+        <= float(maximum_height_error_m),
+    }
+    return checks, details
+
+
 def _translation_xyz(transform):
     value = transform.transform.translation
     return np.array([value.x, value.y, value.z], dtype=float)
@@ -128,12 +199,20 @@ class WristDepthObserver(object):
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(10.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
 
+        self.head_target_base = np.asarray(locked_target_base, dtype=float)
+        prompt_base, approach_unit = initial_edge_prompt(
+            self.head_target_base,
+            backoff_m=args.initial_edge_backoff,
+        )
+        self.initial_prompt_base = prompt_base
+        self.initial_approach_unit = approach_unit
+
         target = PointStamped()
         target.header.frame_id = "base_link"
         target.header.stamp = rospy.Time(0)
-        target.point.x = float(locked_target_base[0])
-        target.point.y = float(locked_target_base[1])
-        target.point.z = float(locked_target_base[2])
+        target.point.x = float(prompt_base[0])
+        target.point.y = float(prompt_base[1])
+        target.point.z = float(prompt_base[2])
         self.head_target = target
 
         if locked_wrist_target_odom is not None:
@@ -150,6 +229,14 @@ class WristDepthObserver(object):
             print(
                 "Loaded fixed wrist target odom={}".format(
                     np.round(wrist_target, 4).tolist()
+                )
+            )
+        else:
+            print(
+                "Initial wrist edge prompt: head={} prompt={} backoff={:.3f}m".format(
+                    np.round(self.head_target_base, 4).tolist(),
+                    np.round(self.initial_prompt_base, 4).tolist(),
+                    float(args.initial_edge_backoff),
                 )
             )
 
@@ -222,6 +309,25 @@ class WristDepthObserver(object):
             with self.lock:
                 needs_latch = self.latched_target is None
             if needs_latch:
+                candidate_base = self._transform_xyz(
+                    refined_camera, camera_frame, "base_link"
+                )
+                latch_checks, latch_details = initial_candidate_gate(
+                    candidate_base,
+                    self.head_target_base,
+                    self.initial_prompt_base,
+                    self.initial_approach_unit,
+                    maximum_prompt_error_m=self.args.maximum_initial_prompt_error,
+                    minimum_edge_offset_m=self.args.minimum_initial_edge_offset,
+                    maximum_edge_offset_m=self.args.maximum_initial_edge_offset,
+                    maximum_lateral_offset_m=self.args.maximum_initial_lateral_offset,
+                    maximum_height_error_m=self.args.maximum_initial_height_error,
+                )
+                if not all(latch_checks.values()):
+                    raise RuntimeError(
+                        "initial wrist edge candidate failed same-tray geometry: "
+                        "checks={} details={}".format(latch_checks, latch_details)
+                    )
                 target_message = self.PointStamped()
                 target_message.header.frame_id = camera_frame
                 target_message.header.stamp = self.rospy.Time(0)
@@ -244,6 +350,13 @@ class WristDepthObserver(object):
                 print(
                     "Latched fixed wrist target odom={}".format(
                         np.round(wrist_target_odom, 4).tolist()
+                    )
+                )
+                print(
+                    "Initial wrist edge candidate base={} checks={} details={}".format(
+                        np.round(candidate_base, 4).tolist(),
+                        latch_checks,
+                        {key: round(value, 4) for key, value in latch_details.items()},
                     )
                 )
                 target_camera = np.asarray(refined_camera, dtype=float)
@@ -733,6 +846,17 @@ def build_parser():
     parser.add_argument("--right-finger-frame", default=DEFAULT_RIGHT_FINGER_FRAME)
     parser.add_argument("--gripper-base-frame", default=DEFAULT_GRIPPER_BASE_FRAME)
     parser.add_argument("--tcp-extension", type=float, default=0.045)
+    parser.add_argument(
+        "--initial-edge-backoff",
+        type=float,
+        default=0.10,
+        help="move the first wrist prompt from tray body to its robot-facing edge",
+    )
+    parser.add_argument("--maximum-initial-prompt-error", type=float, default=0.080)
+    parser.add_argument("--minimum-initial-edge-offset", type=float, default=0.030)
+    parser.add_argument("--maximum-initial-edge-offset", type=float, default=0.170)
+    parser.add_argument("--maximum-initial-lateral-offset", type=float, default=0.080)
+    parser.add_argument("--maximum-initial-height-error", type=float, default=0.060)
     parser.add_argument("--roi-radius", type=int, default=140)
     parser.add_argument("--depth-band", type=float, default=100.0)
     parser.add_argument("--minimum-component-pixels", type=int, default=15)
@@ -772,4 +896,5 @@ def main(argv=None):
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
