@@ -1,6 +1,3 @@
-Exit code: 0
-Wall time: 2.2 seconds
-Output:
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Plan one bounded fixed-wrist correction of the Scene3 gripper axis.
