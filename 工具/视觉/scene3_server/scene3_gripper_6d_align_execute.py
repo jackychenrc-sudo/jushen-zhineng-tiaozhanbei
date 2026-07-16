@@ -29,7 +29,7 @@ from scene3_gripper_6d_align_plan import (
     LEFT_FINGER_FRAME,
     PLAN_PARAM,
     RIGHT_FINGER_FRAME,
-    TARGET_PARAM,
+    TARGET_ODOM_PARAM,
     gripper_geometry,
 )
 
@@ -108,6 +108,7 @@ def run_ros(args):
     import rospy
     import tf2_ros
     from kuavo_msgs.msg import sensorsData
+    from geometry_msgs.msg import PointStamped
     from kuavo_msgs.srv import (
         changeArmCtrlMode,
         changeArmCtrlModeRequest,
@@ -138,6 +139,7 @@ def run_ros(args):
         "physical_error_before_deg",
         "planned_orientation_step_deg",
         "target_tray_base_xyz",
+        "target_tray_odom_xyz",
         "tcp_extension_m",
     )
     missing = [key for key in required if key not in plan]
@@ -163,6 +165,9 @@ def run_ros(args):
         plan["desired_physical_rotation"], dtype=float
     ).reshape(3, 3)
     saved_tray = np.asarray(plan["target_tray_base_xyz"], dtype=float)
+    saved_tray_odom = np.asarray(
+        plan["target_tray_odom_xyz"], dtype=float
+    )
     planned_angle = float(plan["planned_orientation_step_deg"])
     tcp_extension = float(plan["tcp_extension_m"])
     if not all(len(values) == expected for values, expected in (
@@ -192,6 +197,22 @@ def run_ros(args):
         return np.array(
             [translation.x, translation.y, translation.z], dtype=float
         )
+
+    def point_in_base(xyz, source_frame):
+        point = PointStamped()
+        point.header.frame_id = str(source_frame)
+        point.header.stamp = rospy.Time(0)
+        point.point.x = float(xyz[0])
+        point.point.y = float(xyz[1])
+        point.point.z = float(xyz[2])
+        transformed = tf_buffer.transform(
+            point, "base_link", rospy.Duration(3.0)
+        )
+        return np.array([
+            transformed.point.x,
+            transformed.point.y,
+            transformed.point.z,
+        ], dtype=float)
 
     def physical_geometry():
         return gripper_geometry(
@@ -266,7 +287,10 @@ def run_ros(args):
 
     current_arm = sample_arm()
     before_geometry = physical_geometry()
-    current_tray = np.asarray(rospy.get_param(TARGET_PARAM), dtype=float)
+    current_tray_odom = np.asarray(
+        rospy.get_param(TARGET_ODOM_PARAM), dtype=float
+    )
+    current_tray = point_in_base(current_tray_odom, "odom")
     baseline_error = maximum_abs([
         math.degrees(current_arm[index] - source_arm[index])
         for index in range(14)
@@ -280,7 +304,9 @@ def run_ros(args):
         for index in range(14)
     ]
     tcp_plan_error = float(np.linalg.norm(before_geometry["tcp"] - saved_tcp))
-    target_change = float(np.linalg.norm(current_tray - saved_tray))
+    target_change = float(np.linalg.norm(
+        current_tray_odom - saved_tray_odom
+    ))
     before_error = rotation_error_degrees(
         desired_physical_rotation, before_geometry["rotation"]
     )
