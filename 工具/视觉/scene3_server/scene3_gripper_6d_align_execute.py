@@ -105,6 +105,10 @@ def build_parser():
     parser.add_argument("--maximum-tracking-correction-deg", type=float, default=2.5)
     parser.add_argument("--tracking-correction-gain", type=float, default=0.8)
     parser.add_argument("--tracking-correction-seconds", type=float, default=2.5)
+    parser.add_argument("--wbc-handover-seconds", type=float, default=1.5)
+    parser.add_argument(
+        "--maximum-wbc-handover-drift-deg", type=float, default=0.50
+    )
     parser.add_argument("--timeout", type=float, default=8.0)
     return parser
 
@@ -377,6 +381,46 @@ def run_ros(args):
             pass
     if not mode_ok:
         print("GRIPPER_6D_ALIGN_EXECUTION_BLOCKED: cannot enable arm mode 2")
+        return 2
+
+    # ``/arm_traj_change_mode`` only selects external arm control.  On the
+    # simplified V52 model the first MPC arm joints can then move while the
+    # remaining physical wrist joints are still supplied by a different
+    # trajectory path.  Enable the controller's direct WBC joint-trajectory
+    # path so that the same 14-joint command reaches shoulder, elbow and wrist.
+    # Prime the subscriber with the already-validated command reference before
+    # flipping that switch, preventing a stale buffered target from causing a
+    # handover jump.
+    print("Priming the complete 14-joint command reference before WBC handover")
+    hold_reference(source_reference, args.wbc_handover_seconds)
+    handover_before = sample_arm()
+    try:
+        service_name = "/enable_wbc_arm_trajectory_control"
+        rospy.wait_for_service(service_name, timeout=2.0)
+        wbc_proxy = rospy.ServiceProxy(service_name, changeArmCtrlMode)
+        request = changeArmCtrlModeRequest()
+        request.control_mode = 1
+        response = wbc_proxy(request)
+        if not getattr(response, "result", False):
+            raise RuntimeError("direct WBC arm trajectory service rejected")
+    except Exception as exc:
+        print("GRIPPER_6D_ALIGN_EXECUTION_BLOCKED: {}".format(exc))
+        print("No alignment motion was sent")
+        return 2
+
+    hold_reference(source_reference, args.wbc_handover_seconds)
+    handover_after = sample_arm()
+    handover_drift = maximum_abs([
+        math.degrees(handover_after[index] - handover_before[index])
+        for index in range(14)
+    ])
+    print("Direct WBC 14-joint trajectory control enabled")
+    print("WBC handover maximum arm drift: {:.3f}deg".format(
+        handover_drift
+    ))
+    if handover_drift > args.maximum_wbc_handover_drift_deg:
+        print("GRIPPER_6D_ALIGN_EXECUTION_BLOCKED: unsafe WBC handover drift")
+        print("No alignment motion was sent")
         return 2
 
     moved = False
