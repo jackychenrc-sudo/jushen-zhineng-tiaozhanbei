@@ -41,6 +41,7 @@ CONFIRMATION = "SCENE3_WRIST_DEPTH_3CM"
 REFERENCE_PARAM = "/challenge_cup_task_template/scene3/arm_command_reference_deg"
 LOCKED_BASE_PARAM = "/challenge_cup_task_template/scene3/locked_target_base_xyz"
 LOCKED_ODOM_PARAM = "/challenge_cup_task_template/scene3/locked_target_odom_xyz"
+WRIST_TARGET_ODOM_PARAM = "/challenge_cup_task_template/scene3/wrist_target_odom_xyz"
 BASE_TOPIC = "/challenge_cup_task_template/scene3/grasp_point_base"
 ODOM_TOPIC = "/challenge_cup_task_template/scene3/grasp_point_odom"
 
@@ -114,6 +115,7 @@ class WristDepthObserver(object):
         CameraInfo,
         CompressedImage,
         locked_target_base,
+        locked_wrist_target_odom=None,
     ):
         self.args = args
         self.rospy = rospy
@@ -133,6 +135,23 @@ class WristDepthObserver(object):
         target.point.y = float(locked_target_base[1])
         target.point.z = float(locked_target_base[2])
         self.head_target = target
+
+        if locked_wrist_target_odom is not None:
+            wrist_target = np.asarray(locked_wrist_target_odom, dtype=float)
+            if wrist_target.shape != (3,) or not np.all(np.isfinite(wrist_target)):
+                raise ValueError("saved wrist target odom coordinate is invalid")
+            latched = PointStamped()
+            latched.header.frame_id = "odom"
+            latched.header.stamp = rospy.Time(0)
+            latched.point.x = float(wrist_target[0])
+            latched.point.y = float(wrist_target[1])
+            latched.point.z = float(wrist_target[2])
+            self.latched_target = latched
+            print(
+                "Loaded fixed wrist target odom={}".format(
+                    np.round(wrist_target, 4).tolist()
+                )
+            )
 
         rospy.Subscriber(args.info_topic, CameraInfo, self._info, queue_size=1)
         rospy.Subscriber(args.depth_topic, CompressedImage, self._depth, queue_size=1)
@@ -196,7 +215,7 @@ class WristDepthObserver(object):
                 depth_band_mm=self.args.depth_band,
                 minimum_pixels=self.args.minimum_component_pixels,
             )
-            target_camera = deproject_pixel(
+            refined_camera = deproject_pixel(
                 component["target_pixel"], component["target_depth_mm"], camera_k
             )
 
@@ -206,25 +225,34 @@ class WristDepthObserver(object):
                 target_message = self.PointStamped()
                 target_message.header.frame_id = camera_frame
                 target_message.header.stamp = self.rospy.Time(0)
-                target_message.point.x = float(target_camera[0])
-                target_message.point.y = float(target_camera[1])
-                target_message.point.z = float(target_camera[2])
+                target_message.point.x = float(refined_camera[0])
+                target_message.point.y = float(refined_camera[1])
+                target_message.point.z = float(refined_camera[2])
                 latched = self.tf_buffer.transform(
-                    target_message, "base_link", self.rospy.Duration(0.3)
+                    target_message, "odom", self.rospy.Duration(0.3)
                 )
                 latched.header.stamp = self.rospy.Time(0)
                 with self.lock:
                     if self.latched_target is None:
                         self.latched_target = latched
+                wrist_target_odom = [
+                    float(latched.point.x),
+                    float(latched.point.y),
+                    float(latched.point.z),
+                ]
+                self.rospy.set_param(WRIST_TARGET_ODOM_PARAM, wrist_target_odom)
                 print(
-                    "Latched wrist target base_link={}".format(
-                        [
-                            round(float(latched.point.x), 4),
-                            round(float(latched.point.y), 4),
-                            round(float(latched.point.z), 4),
-                        ]
+                    "Latched fixed wrist target odom={}".format(
+                        np.round(wrist_target_odom, 4).tolist()
                     )
                 )
+                target_camera = np.asarray(refined_camera, dtype=float)
+            else:
+                # Once a legal wrist RGB-D point has been selected, keep that
+                # exact physical point in odom.  The depth component remains a
+                # visibility/occupancy check; it is no longer allowed to move
+                # the servo target to a different tray pixel on every run.
+                target_camera = np.asarray(expected, dtype=float)
 
             transforms = []
             for frame in (
@@ -380,15 +408,6 @@ def run(args):
     arm_publisher = rospy.Publisher("/kuavo_arm_traj", JointState, queue_size=10)
     task = Scene3Task(None, arm_publisher)
     task.wait_for_arm_subscriber(timeout=args.timeout)
-    observer = WristDepthObserver(
-        args,
-        rospy,
-        tf2_ros,
-        PointStamped,
-        CameraInfo,
-        CompressedImage,
-        locked_base,
-    )
 
     def hold_reference(values, hold_time):
         values = [float(value) for value in values]
@@ -501,6 +520,23 @@ def run(args):
     )
     if not all(head_before["checks"].values()):
         raise RuntimeError("head same-tray gate failed before motion")
+
+    if args.reset_wrist_target and rospy.has_param(WRIST_TARGET_ODOM_PARAM):
+        rospy.delete_param(WRIST_TARGET_ODOM_PARAM)
+        print("Deleted previous wrist target; one new wrist point will be latched")
+    fixed_wrist_target = None
+    if rospy.has_param(WRIST_TARGET_ODOM_PARAM):
+        fixed_wrist_target = rospy.get_param(WRIST_TARGET_ODOM_PARAM)
+    observer = WristDepthObserver(
+        args,
+        rospy,
+        tf2_ros,
+        PointStamped,
+        CameraInfo,
+        CompressedImage,
+        head_before["base"],
+        locked_wrist_target_odom=fixed_wrist_target,
+    )
 
     print("Waiting for three stable wrist-depth target/TCP observations")
     before = observer.wait_stable(args.observation_timeout)
@@ -673,7 +709,6 @@ def run(args):
         raise
 
     rospy.set_param(REFERENCE_PARAM, target_reference)
-    rospy.set_param(LOCKED_BASE_PARAM, after["target"].tolist())
     print(
         "WRIST_DEPTH_STEP_OK: TCP error {:.1f}mm -> {:.1f}mm; claw remains open".format(
             error_norm * 1000.0, after_error * 1000.0
@@ -686,6 +721,11 @@ def build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirmation", default="")
+    parser.add_argument(
+        "--reset-wrist-target",
+        action="store_true",
+        help="discard the saved wrist target and latch one new odom point",
+    )
     parser.add_argument("--depth-topic", default=DEFAULT_DEPTH_TOPIC)
     parser.add_argument("--info-topic", default=DEFAULT_INFO_TOPIC)
     parser.add_argument("--camera-frame", default="right_wrist_camera_link")
