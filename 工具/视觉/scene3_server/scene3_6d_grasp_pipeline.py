@@ -822,10 +822,18 @@ def run_wrist_verification(controller, args):
     if not all(checks.values()):
         print("SIX_D_WRIST_VERIFY_BLOCKED: final 6D geometry is not ready")
         return 2
+    # Prompt wrist RGB-D at the same near-edge surface used by the grasp
+    # geometry.  Prompting at the tray centre would put the visual target
+    # roughly 10.5 cm beyond the finger midpoint and make the pre-close gate
+    # fail even when the gripper has reached the planned grasp pose.
+    verification_target = targets["grasp_surface"]
     controller.rospy.set_param(
         LOCKED_BASE_PARAM,
-        [float(value) for value in state["tray_base"]],
+        [float(value) for value in verification_target],
     )
+    print("Wrist verification near-edge target: {}".format(
+        np.round(verification_target, 4).tolist()
+    ))
     gate = os.path.join(
         os.path.dirname(os.path.abspath(__file__)),
         "scene3_wrist_preclose_gate.py",
@@ -849,6 +857,7 @@ def run_wrist_verification(controller, args):
     controller.rospy.set_param(VERIFIED_PARAM, {
         "wall_time": float(time.time()),
         "tray_odom": state["tray_odom"].tolist(),
+        "grasp_surface": verification_target.tolist(),
         "final_tcp": targets["final_tcp"].tolist(),
         "observed_tcp": state["geometry"]["tcp"].tolist(),
     })
