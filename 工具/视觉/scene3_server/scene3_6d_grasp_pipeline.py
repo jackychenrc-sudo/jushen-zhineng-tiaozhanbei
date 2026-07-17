@@ -53,8 +53,9 @@ CONFIRMATION = "SCENE3_6D_PIPELINE"
 VERIFIED_PARAM = (
     "/challenge_cup_task_template/scene3/six_d_preclose_verified"
 )
-LOCKED_BASE_PARAM = (
-    "/challenge_cup_task_template/scene3/locked_target_base_xyz"
+WRIST_TARGET_PARAM = (
+    "/challenge_cup_task_template/scene3/"
+    "six_d_wrist_grasp_surface_base_xyz"
 )
 
 
@@ -141,6 +142,56 @@ def grasp_targets(args, state):
         preprocess_standoff_m=float(args.preprocess_standoff),
         grasp_height_offset_m=float(args.grasp_height_offset),
     )
+
+
+def invalidate_preclose_verification(controller):
+    """Invalidate any older wrist approval before motion or re-verification."""
+
+    if controller.rospy.has_param(VERIFIED_PARAM):
+        controller.rospy.delete_param(VERIFIED_PARAM)
+
+
+def verification_record_checks(verified, state, targets, args, now=None):
+    """Check that a wrist approval is fresh and belongs to this exact target."""
+
+    now = time.time() if now is None else float(now)
+    try:
+        age = now - float(verified.get("wall_time", 0.0))
+        verified_tray = np.asarray(
+            verified.get("tray_odom", []), dtype=float
+        ).reshape(-1)
+        verified_surface = np.asarray(
+            verified.get("grasp_surface", []), dtype=float
+        ).reshape(-1)
+        vectors_valid = bool(
+            verified_tray.size == 3
+            and verified_surface.size == 3
+            and np.all(np.isfinite(verified_tray))
+            and np.all(np.isfinite(verified_surface))
+        )
+    except (TypeError, ValueError):
+        age = float("inf")
+        verified_tray = np.zeros(3)
+        verified_surface = np.zeros(3)
+        vectors_valid = False
+
+    same_tray = bool(
+        vectors_valid
+        and np.linalg.norm(verified_tray - state["tray_odom"])
+        <= float(args.maximum_tray_identity_shift)
+    )
+    same_surface = bool(
+        vectors_valid
+        and np.linalg.norm(verified_surface - targets["grasp_surface"])
+        <= float(args.maximum_tray_identity_shift)
+    )
+    return {
+        "verification_fresh": (
+            0.0 <= age <= float(args.verification_max_age)
+        ),
+        "verified_same_tray": same_tray,
+        "verified_same_surface": same_surface,
+    }
 
 
 def predicted_physical_pose(state, plan):
@@ -321,6 +372,7 @@ def run_preprocess(controller, args, execute):
         if not execute:
             print("SIX_D_PREPROCESS_PLAN_OK: calculation only; no command sent")
             return 0
+        invalidate_preclose_verification(controller)
         ok, _ = controller.execute_plan(
             state,
             plan,
@@ -511,6 +563,7 @@ def run_align(controller, args, execute):
         if not execute:
             print("SIX_D_ALIGN_PLAN_OK: calculation only; no command sent")
             return 0
+        invalidate_preclose_verification(controller)
         ok, _ = controller.execute_plan(
             state,
             plan,
@@ -771,6 +824,7 @@ def run_insert(controller, args, execute):
         if not execute:
             print("SIX_D_INSERT_PLAN_OK: calculation only; no command sent")
             return 0
+        invalidate_preclose_verification(controller)
         ok, _ = controller.execute_plan(
             state,
             plan,
@@ -818,6 +872,7 @@ def final_geometry_checks(controller, args):
 
 
 def run_wrist_verification(controller, args):
+    invalidate_preclose_verification(controller)
     checks, state, targets = final_geometry_checks(controller, args)
     if not all(checks.values()):
         print("SIX_D_WRIST_VERIFY_BLOCKED: final 6D geometry is not ready")
@@ -828,7 +883,7 @@ def run_wrist_verification(controller, args):
     # fail even when the gripper has reached the planned grasp pose.
     verification_target = targets["grasp_surface"]
     controller.rospy.set_param(
-        LOCKED_BASE_PARAM,
+        WRIST_TARGET_PARAM,
         [float(value) for value in verification_target],
     )
     print("Wrist verification near-edge target: {}".format(
@@ -843,15 +898,13 @@ def run_wrist_verification(controller, args):
         "-u",
         gate,
         "--target-param",
-        LOCKED_BASE_PARAM,
+        WRIST_TARGET_PARAM,
         "--timeout",
         str(float(args.wrist_timeout)),
     ]
     print("Running observation-only right-wrist RGB-D pre-close gate")
     result = subprocess.call(command)
     if result != 0:
-        if controller.rospy.has_param(VERIFIED_PARAM):
-            controller.rospy.delete_param(VERIFIED_PARAM)
         print("SIX_D_WRIST_VERIFY_BLOCKED: claw remains open")
         return 2
     controller.rospy.set_param(VERIFIED_PARAM, {
@@ -876,9 +929,10 @@ def run_close(controller, args):
         print("SIX_D_CLOSE_BLOCKED: no successful wrist verification")
         return 2
     verified = controller.rospy.get_param(VERIFIED_PARAM)
-    age = time.time() - float(verified.get("wall_time", 0.0))
-    checks, _, _ = final_geometry_checks(controller, args)
-    checks["verification_fresh"] = 0.0 <= age <= float(args.verification_max_age)
+    checks, state, targets = final_geometry_checks(controller, args)
+    checks.update(verification_record_checks(
+        verified, state, targets, args
+    ))
     print("Close checks: {}".format(checks))
     if not all(checks.values()):
         print("SIX_D_CLOSE_BLOCKED: verification or geometry is stale")
