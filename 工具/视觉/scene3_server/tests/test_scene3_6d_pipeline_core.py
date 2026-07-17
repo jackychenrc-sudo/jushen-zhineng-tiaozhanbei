@@ -90,6 +90,17 @@ class Scene36DPipelineCoreTest(unittest.TestCase):
         )
         self.assertAlmostEqual(result["final_tcp"][2], 0.265)
         self.assertAlmostEqual(result["preprocess_tcp"][2], 0.265)
+        self.assertAlmostEqual(result["grasp_surface"][2], 0.250)
+        np.testing.assert_allclose(
+            result["final_tcp"] - result["grasp_surface"],
+            [0.0, 0.0, 0.015],
+            atol=1e-12,
+        )
+        np.testing.assert_allclose(
+            result["tray_center"] - result["grasp_surface"],
+            0.105 * result["approach"],
+            atol=1e-12,
+        )
 
     def test_preprocess_step_does_not_construct_an_orientation_target(self):
         step = position_only_eef_step(
