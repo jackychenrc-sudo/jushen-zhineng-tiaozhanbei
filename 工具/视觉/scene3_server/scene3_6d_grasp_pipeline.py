@@ -122,6 +122,7 @@ def build_parser():
     parser.add_argument("--maximum-final-orientation-error-deg", type=float, default=10.0)
 
     parser.add_argument("--state-samples", type=int, default=5)
+    parser.add_argument("--arm-topic-quiet-seconds", type=float, default=0.4)
     parser.add_argument("--prime-seconds", type=float, default=0.5)
     parser.add_argument("--motion-seconds", type=float, default=3.0)
     parser.add_argument("--rollback-seconds", type=float, default=3.0)
