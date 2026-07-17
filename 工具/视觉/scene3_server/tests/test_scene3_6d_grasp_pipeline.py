@@ -3,6 +3,7 @@
 import os
 import sys
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -14,12 +15,15 @@ if SERVER not in sys.path:
 
 from scene3_6d_grasp_pipeline import (  # noqa: E402
     CONFIRMATION,
+    LOCKED_BASE_PARAM,
     build_parser,
+    desired_rotation_for_targets,
     grasp_targets,
     plan_align_segment,
     plan_insert_segment,
     plan_preprocess_segment,
     require_execution_confirmation,
+    run_wrist_verification,
 )
 from scene3_gripper_6d_align_plan import (  # noqa: E402
     matrix_to_quaternion,
@@ -52,6 +56,26 @@ class FakeController(object):
             "predicted_quaternion": list(target_quaternion),
             "predicted_rotation": rotation,
         }
+
+
+class FakeRospy(object):
+    def __init__(self):
+        self.params = {}
+
+    def set_param(self, name, value):
+        self.params[name] = value
+
+
+class FakeVerificationController(object):
+    def __init__(self, state):
+        self.state = state
+        self.rospy = FakeRospy()
+
+    def sample_state(self):
+        return self.state
+
+    def audit_checks(self, _state):
+        return {"ready": True}
 
 
 def make_state(tcp, physical_rotation=None, tray=None):
@@ -148,7 +172,37 @@ class Scene36DGraspPipelineTest(unittest.TestCase):
             plan["predicted_physical_rotation"], np.eye(3), atol=1e-12
         )
 
+    def test_wrist_gate_is_prompted_at_near_edge_not_tray_center(self):
+        seed = make_state([0.0, 0.0, 0.0])
+        targets = grasp_targets(self.args, seed)
+        desired = desired_rotation_for_targets(targets)
+        state = make_state(
+            targets["final_tcp"],
+            desired,
+            tray=seed["tray_base"],
+        )
+        controller = FakeVerificationController(state)
+
+        with patch(
+            "scene3_6d_grasp_pipeline.subprocess.call",
+            return_value=0,
+        ):
+            result = run_wrist_verification(controller, self.args)
+
+        self.assertEqual(result, 0)
+        np.testing.assert_allclose(
+            controller.rospy.params[LOCKED_BASE_PARAM],
+            targets["grasp_surface"],
+            atol=1e-12,
+        )
+        self.assertGreater(
+            np.linalg.norm(
+                np.asarray(controller.rospy.params[LOCKED_BASE_PARAM])
+                - state["tray_base"]
+            ),
+            0.10,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
-
