@@ -13,7 +13,10 @@ SERVER = os.path.dirname(HERE)
 if SERVER not in sys.path:
     sys.path.insert(0, SERVER)
 
-from scene3_6d_pipeline_ros import Scene36DRosController  # noqa: E402
+from scene3_6d_pipeline_ros import (  # noqa: E402
+    ARM_COMMAND_TOPIC,
+    Scene36DRosController,
+)
 
 
 class FakeRosException(Exception):
@@ -37,6 +40,9 @@ class FakeRospy(object):
 
 class Scene36DRosControllerTest(unittest.TestCase):
 
+    def test_pipeline_stays_on_validated_arm_command_topic(self):
+        self.assertEqual(ARM_COMMAND_TOPIC, "/kuavo_arm_traj")
+
     @staticmethod
     def make_controller(rospy):
         controller = object.__new__(Scene36DRosController)
@@ -52,7 +58,7 @@ class Scene36DRosControllerTest(unittest.TestCase):
         self.assertTrue(controller.arm_topic_is_quiet())
         self.assertEqual(
             rospy.calls,
-            [("/kuavo_arm_traj", object, 0.4)],
+            [(ARM_COMMAND_TOPIC, object, 0.4)],
         )
 
     def test_arm_topic_is_not_quiet_when_a_command_arrives(self):
