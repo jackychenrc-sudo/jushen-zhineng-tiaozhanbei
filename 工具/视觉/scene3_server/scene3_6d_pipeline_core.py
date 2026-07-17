@@ -139,7 +139,8 @@ def compute_grasp_targets(tray_center_base,
     tray = _finite_vector(tray_center_base, 3, "tray centre")
     approach = np.array([tray[0], tray[1], 0.0], dtype=float)
     approach = normalize(approach, "horizontal tray approach")
-    final_tcp = tray - float(tray_center_to_grasp_m) * approach
+    grasp_surface = tray - float(tray_center_to_grasp_m) * approach
+    final_tcp = grasp_surface.copy()
     final_tcp[2] += float(grasp_height_offset_m)
     preprocess_tcp = (
         final_tcp - float(preprocess_standoff_m) * approach
@@ -147,6 +148,7 @@ def compute_grasp_targets(tray_center_base,
     return {
         "tray_center": tray,
         "approach": approach,
+        "grasp_surface": grasp_surface,
         "preprocess_tcp": preprocess_tcp,
         "final_tcp": final_tcp,
         "insert_distance_m": float(preprocess_standoff_m),
