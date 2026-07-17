@@ -451,6 +451,19 @@ class Scene36DRosController(object):
                 raise RuntimeError("/kuavo_arm_traj has no subscriber")
             self.rospy.sleep(0.05)
 
+    def arm_topic_is_quiet(self):
+        """Return false when another node is actively commanding the arms."""
+
+        try:
+            self.rospy.wait_for_message(
+                "/kuavo_arm_traj",
+                self.JointState,
+                timeout=float(self.args.arm_topic_quiet_seconds),
+            )
+            return False
+        except self.rospy.ROSException:
+            return True
+
     def enable_external_arm_mode(self):
         for service_name in (
             "/arm_traj_change_mode",
@@ -521,6 +534,11 @@ class Scene36DRosController(object):
 
         source = np.asarray(plan["source_command_deg"], dtype=float)
         target = np.asarray(plan["target_command_deg"], dtype=float)
+        if not self.arm_topic_is_quiet():
+            print("{}_BLOCKED: /kuavo_arm_traj has another active publisher".format(
+                label
+            ))
+            return False, None
         if not self.enable_external_arm_mode():
             print("{}_BLOCKED: cannot enable arm mode 2".format(label))
             return False, None
