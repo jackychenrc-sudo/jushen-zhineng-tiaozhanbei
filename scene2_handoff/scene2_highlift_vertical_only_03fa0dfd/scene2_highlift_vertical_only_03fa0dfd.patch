@@ -1,0 +1,27 @@
+--- scene2_pick_nearest_red.py
++++ scene2_pick_nearest_red.py
+@@ -3167,11 +3167,23 @@
+             current_z = float(measured_lift_pose.pos_xyz[2])
+             if current_z >= minimum_transit_z + 0.005:
+                 break
+             step_size = _restricted_lift_step_size(index, high_step)
++            if index >= 10:
++                lift_x = float(measured_lift_pose.pos_xyz[0])
++                lift_y = float(measured_lift_pose.pos_xyz[1])
++                if index == 10:
++                    rospy.loginfo(
++                        "restricted high lift large-step mode: retaining measured XY=[%.4f, %.4f]",
++                        lift_x,
++                        lift_y,
++                    )
++            else:
++                lift_x = float(high_target[0])
++                lift_y = float(high_target[1])
+             target = [
+-                float(high_target[0]),
+-                float(high_target[1]),
++                lift_x,
++                lift_y,
+                 min(current_z + step_size, command_transit_z),
+             ]
+             current, next_lift_pose = _execute_restricted_waypoint(
