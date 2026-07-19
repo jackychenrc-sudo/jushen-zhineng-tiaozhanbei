@@ -1,0 +1,55 @@
+--- scene2_pick_nearest_red.py
++++ scene2_pick_nearest_red.py
+@@ -2495,20 +2495,42 @@
+                 round(math.degrees(solution[index] - actual[index]), 3)
+                 for index in range(7)
+             ],
+         )
+-    requires_tracking_replan = (
++    requires_orientation_feedback_replan = (
+         orientation_quat is not None
+         and actual_error > actual_tolerance
+-    )
+-    if requires_tracking_replan and tracking_retry < 2:
+-        rospy.logwarn(
+-            "restricted %s feedback replan=%d xyz_err=%.4fm quat_err=%.2fdeg",
+-            label,
+-            tracking_retry + 1,
+-            actual_error,
+-            actual_orientation_error_deg,
+-        )
++        and tracking_retry < 2
++    )
++    # High lift has no orientation constraint, so it previously had no
++    # feedback retry at all: a marginal 15.1 mm reading exited immediately.
++    # Reissue the identical already-approved Cartesian target only once from
++    # measured joints; the same 15 mm check below remains authoritative.
++    requires_high_lift_feedback_replan = (
++        label.startswith("high_lift_")
++        and orientation_quat is None
++        and actual_error > actual_tolerance
++        and tracking_retry < 1
++    )
++    if (
++        requires_orientation_feedback_replan
++        or requires_high_lift_feedback_replan
++    ):
++        if requires_high_lift_feedback_replan:
++            rospy.logwarn(
++                "restricted %s high-lift feedback retry=%d xyz_err=%.4fm; retaining identical target",
++                label,
++                tracking_retry + 1,
++                actual_error,
++            )
++        else:
++            rospy.logwarn(
++                "restricted %s feedback replan=%d xyz_err=%.4fm quat_err=%.2fdeg",
++                label,
++                tracking_retry + 1,
++                actual_error,
++                actual_orientation_error_deg,
++            )
+         return _execute_restricted_waypoint(
+             runtime,
+             arm_hold,
+             actual,
