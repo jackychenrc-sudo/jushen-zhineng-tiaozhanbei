@@ -50,6 +50,13 @@ LOCKED_ODOM_PARAM = (
     "/challenge_cup_task_template/scene3/locked_target_odom_xyz"
 )
 
+# Keep the complete Scene3 arm pipeline on the command path that has already
+# passed bounded Cartesian segment tests. Do not replace this with
+# /kuavo_arm_target_poses without a separate handover/trajectory validation:
+# a local experiment on 2026-07-17 planned a 5 mm TCP step but produced about
+# 51 mm of physical motion and moved the nominally held arm.
+ARM_COMMAND_TOPIC = "/kuavo_arm_traj"
+
 ARM_NAMES = ["arm_joint_{}".format(index) for index in range(1, 15)]
 
 
@@ -98,7 +105,7 @@ class Scene36DRosController(object):
         self.tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(15.0))
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer)
         self.arm_publisher = rospy.Publisher(
-            "/kuavo_arm_traj", JointState, queue_size=10
+            ARM_COMMAND_TOPIC, JointState, queue_size=10
         )
         self._fk_proxy = None
         self._ik_proxy = None
@@ -448,7 +455,9 @@ class Scene36DRosController(object):
         deadline = time.time() + float(self.args.timeout)
         while self.arm_publisher.get_num_connections() == 0:
             if time.time() >= deadline:
-                raise RuntimeError("/kuavo_arm_traj has no subscriber")
+                raise RuntimeError(
+                    "{} has no subscriber".format(ARM_COMMAND_TOPIC)
+                )
             self.rospy.sleep(0.05)
 
     def arm_topic_is_quiet(self):
@@ -456,7 +465,7 @@ class Scene36DRosController(object):
 
         try:
             self.rospy.wait_for_message(
-                "/kuavo_arm_traj",
+                ARM_COMMAND_TOPIC,
                 self.JointState,
                 timeout=float(self.args.arm_topic_quiet_seconds),
             )
@@ -535,8 +544,8 @@ class Scene36DRosController(object):
         source = np.asarray(plan["source_command_deg"], dtype=float)
         target = np.asarray(plan["target_command_deg"], dtype=float)
         if not self.arm_topic_is_quiet():
-            print("{}_BLOCKED: /kuavo_arm_traj has another active publisher".format(
-                label
+            print("{}_BLOCKED: {} has another active publisher".format(
+                label, ARM_COMMAND_TOPIC
             ))
             return False, None
         if not self.enable_external_arm_mode():
